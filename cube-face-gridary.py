@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
 
 # [-n .. n]
-n = 1
+n = 2
 
 corners = np.array([[1, i / n, j / n] for i in range(n + 1) for j in range(n + 1)])
 corners = corners / np.sqrt(np.sum(np.square(corners), axis=-1, keepdims=True))

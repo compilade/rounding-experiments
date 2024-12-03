@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+#
+# Note: This is only intended for experimentation,
+#       and as such the code isn't really cleaned up.
+# Some parts are duplicated when convenient.
+# (a lot of variations of the same ideas are compared)
+
 from typing import Literal
 import numpy as np
 from dataclasses import dataclass
