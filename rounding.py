@@ -585,32 +585,33 @@ def show(n: str, q: QuantInfo, a: np.ndarray):
     # )
 
 
-rng = np.random.default_rng(42)
+if __name__ == "__main__":
+    rng = np.random.default_rng(42)
 
-for i in range(8):
-    a = rng.laplace(
-        size=(
-            1,
-            32,
+    for i in range(8):
+        a = rng.laplace(
+            size=(
+                1,
+                32,
+            )
         )
-    )
 
-    min_max = 7
-    axis = -1
+        min_max = 7
+        axis = -1
 
-    print(a)
-    show("inv_sq", anyrize_inv_sq(a, min_max, axis=axis), a)
-    show("inv_sqrt", anyrize_inv_sqrt(a, min_max, axis=axis), a)
-    show("sq", anyrize_sq(a, min_max, axis=axis), a)
-    show("sqrt", anyrize_sqrt(a, min_max, axis=axis), a)
-    show("offset_mean", anyrize_offset_mean(a, min_max, axis=axis), a)
-    show("offset_min", anyrize_offset_min(a, 2 * min_max, axis=axis), a)
-    show("offset_min_mean", anyrize_offset_min_mean(a, 2 * min_max, axis=axis), a)
-    show("offset_dumb", offset_dumb_round(a, min_max, axis=axis), a)
-    show("absmax", absmax_round(a, min_max, axis=axis), a)
-    show("absmax_dumb", absmax_dumb_round(a, min_max, axis=axis), a)
-    show("absmean", absmean_round(a, min_max, axis=axis), a)
-    show("absmedian", absmedian_round(a, min_max, axis=axis), a)
-    show("binary", binary(a, axis=axis), a)
-    show("bin_offset", binary_offset(a, axis=axis), a)
-    print("----")
+        print(a)
+        show("inv_sq", anyrize_inv_sq(a, min_max, axis=axis), a)
+        show("inv_sqrt", anyrize_inv_sqrt(a, min_max, axis=axis), a)
+        show("sq", anyrize_sq(a, min_max, axis=axis), a)
+        show("sqrt", anyrize_sqrt(a, min_max, axis=axis), a)
+        show("offset_mean", anyrize_offset_mean(a, min_max, axis=axis), a)
+        show("offset_min", anyrize_offset_min(a, 2 * min_max, axis=axis), a)
+        show("offset_min_mean", anyrize_offset_min_mean(a, 2 * min_max, axis=axis), a)
+        show("offset_dumb", offset_dumb_round(a, min_max, axis=axis), a)
+        show("absmax", absmax_round(a, min_max, axis=axis), a)
+        show("absmax_dumb", absmax_dumb_round(a, min_max, axis=axis), a)
+        show("absmean", absmean_round(a, min_max, axis=axis), a)
+        show("absmedian", absmedian_round(a, min_max, axis=axis), a)
+        show("binary", binary(a, axis=axis), a)
+        show("bin_offset", binary_offset(a, axis=axis), a)
+        print("----")
