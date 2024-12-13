@@ -21,12 +21,13 @@ The weird stuff starts to happen at heptary `{-3, -2, -1, 0, 1, 2, 3}`:
 
 ![Heptary rounding is very weird. This is definitely not a plain grid anymore. It's a very cool tessellation.](./images/cube-face-heptary-512x512.png)
 
-Starting from enneary `{-4, -3, -2, -1, 0, 1, 2, 3, 4}`, my rounding function strangely doesn't give the ideal result.
-This is what it *should* look like:
+Starting from enneary `{-4, -3, -2, -1, 0, 1, 2, 3, 4}`, floating point errors on the rounding scaling factor become noticeable and have to be considered. Thankfully, it seems like changing the scale by `(2**23 + 1) / (2**23)` (the next representable number after 1) is enough to make it work as far as I've tested it (`[-31, 31]`).
 
 ![Enneary rounding. It's starting to look like when standing in the middle of a point grid, but some are farther than others.](./images/cube-face-enneary-512x512.png)
 
-But it doesn't, so this means it's not perfect yet.
+From `[-63, 63]` (7-bit) there are some small artifacts again caused by floating point precision, but this time when sorting fractions when ordering the consecutive rounding scales.
+
+TODO: add higher-precision visualizations.
 
 (These images are best viewed from inside a cube with all faces set to use the desired image as a texture)
 
@@ -34,8 +35,12 @@ But it doesn't, so this means it's not perfect yet.
 
 My main unsolved challenges right now:
 
-- Generalize to more than `{-3, -2, -1, 0, 1, 2, 3}`
+- ~~Generalize to more than `{-3, -2, -1, 0, 1, 2, 3}`~~
+  - Solved, the problem was off-by-one floating point errors introduced by division and multiplication of the rounding scale.
 - Prove that a particular algorithm produces the best possible rounding
+  - I guess it can be proved informally by noticing that there are no sharp transitions in the errors?
+  - Still would eventually need a formal proof, although with floating point numbers it won't ever be perfect.
+- Check if nested superblock rounding can be improved
 - Remove the need for sorting the components to find the best rounding scale
 - Find a fast enough general method to find **both** the best rounding offset *and* scale combination
 

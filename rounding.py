@@ -18,6 +18,7 @@ class QuantInfo:
     sc: float | np.float64 | np.ndarray
     mn: np.ndarray | None = None
     iscales: np.ndarray | None = None
+    iscale: float | np.ndarray | None = None
     angles: np.ndarray | None = None
 
 
@@ -53,23 +54,37 @@ def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None)
     ab, odd = np.broadcast_arrays(a[..., np.newaxis], odd)
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
+    # TODO: how to skip some thresholds for some numbers? Should that be done?
 
     # TODO: handle assymmetric quantization by making "odd" apply differently to positive and negative values
     # TODO(research): heuristic for side with more precision?
+    # Try thresholds in descending order. Everything is zero at first.
+    # From biggest rounding divisor to smallest.
+    # Every threshold crossing should be considered, which means
+    # every component should cross (0..N + 0.5).
+    # x/is = (N * 2 - 1)/2
+    # is = 2*x / (N * 2 - 1)
     iscales = abs(ab) / odd
     ids = np.argsort(-iscales, axis=axis)
     sa = np.take_along_axis(ab, ids, axis=axis)
     so = np.take_along_axis(odd, ids, axis=axis)
 
+    # Calculate the squared cosine for all distinct rounding scales
     c = np.cumsum(abs(sa), axis=axis)
-    cn = (c * c) / np.cumsum(so, axis=axis)
+    cn = (np.square(c)) / np.cumsum(so, axis=axis)
 
     # FIXME: Need the last max to avoid recalculating the scale later
     mid = np.take_along_axis(ids, np.argmax(cn, axis=axis, keepdims=True), axis=axis)
 
     iscale = 2 * np.take_along_axis(iscales, mid, axis=axis)
 
-    q = np.clip(np_roundf(a / iscale), -abs(min_max), abs(min_max))
+    # Small fudging is necessary to round correctly
+    # starting from [-4..4]
+    q = np.clip(
+        np_roundf((a * np.float32((2**23 + 1) / (2**23))) / iscale),
+        -abs(min_max),
+        abs(min_max),
+    )
 
     sc = np.sum(q * a, axis=axis, keepdims=(axis is not None)) / np.sum(
         q * q, axis=axis, keepdims=(axis is not None)
@@ -81,6 +96,7 @@ def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None)
 
     return QuantInfo(
         v=q * sc,
+        iscale=iscale,
         iscales=sis,
         angles=np.sqrt(cn / np.sum(a * a, axis=axis, keepdims=(axis is not None))),
         q=q,
@@ -212,6 +228,64 @@ def anyrize_sqrt(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None):
         q=q,
         sc=sc,
     )
+
+
+# TODO: handle FMA?
+# TODO: can np.rint be used instead or not?
+# magic numbers from ggml-quants.c
+def np_nearest_int(fval: np.ndarray) -> np.ndarray:
+    assert fval.dtype == np.float32
+    fval = np.where(np.isfinite(fval), fval, 0)  # ignore NaNs and infinities
+    assert np.all(abs(fval) <= 4194303.0)
+    val = fval + 12582912.0
+    return (val.view(np.int32) & 0x007FFFFF) - 0x00400000
+
+
+# GROUP_MAX_EPS in ggml-quants.c
+_GROUP_MAX_EPS = 1e-15
+
+
+# NOTE: only implements rmse_type 1 because the others are not used
+def make_qx_quants(nmax: int, x: np.ndarray, qw: np.ndarray | None = None) -> QuantInfo:
+    x = x.astype(np.float32, copy=False)
+    assert x.dtype == np.float32
+    # (sub-blocks, elems)
+    # assert len(x.shape) == 3
+
+    # TODO: name the axes
+    # (blocks, sub-blocks, 1)
+    max = np.take_along_axis(x, abs(x).argmax(axis=-1, keepdims=True), axis=-1)
+
+    nmaxes = np.array(
+        [-(nmax + (0.1 * i)) for i in (0, *(j for j in range(-9, 10) if j != 0))],
+        dtype=np.float32,
+    ).reshape((*(1 for _ in max.shape[:-1]), 19))
+
+    with np.errstate(divide="ignore"):
+        # (blocks, sub-blocks, 19, 1)
+        iscale = np.where(abs(max) < _GROUP_MAX_EPS, 0, nmaxes / max)[..., np.newaxis]
+
+    x = x[..., np.newaxis, :]
+
+    l = np_nearest_int(iscale * x).clip(min=-nmax, max=nmax - 1).astype(np.int8)
+    # (blocks, sub-blocks, 19, elems)
+    w = x * x if qw is None else qw.reshape(x.shape)
+
+    # (blocks, sub-blocks, 19)
+    sumlx = np.cumsum(w * x * l, axis=-1, dtype=np.float32)[..., -1]
+    suml2 = np.cumsum(w * l * l, axis=-1, dtype=np.float32)[..., -1]
+
+    # Not exactly the same as the reference implementation, but close enough
+    with np.errstate(divide="ignore"):
+        scale = np.where(suml2 > np.float32(0), sumlx / suml2, np.float32(0))
+
+    best = (scale * sumlx).argmax(axis=-1, keepdims=True)
+    L = np.take_along_axis(l, best[..., np.newaxis], axis=-2)  # + np.int8(nmax)
+    scale = np.take_along_axis(scale, best, axis=-1)
+
+    L = L.squeeze(axis=-2)
+
+    return QuantInfo(v=L * scale, sc=scale, q=L)
 
 
 def anyrize_offset_mean(
@@ -604,6 +678,7 @@ if __name__ == "__main__":
         show("inv_sqrt", anyrize_inv_sqrt(a, min_max, axis=axis), a)
         show("sq", anyrize_sq(a, min_max, axis=axis), a)
         show("sqrt", anyrize_sqrt(a, min_max, axis=axis), a)
+        show("qx_quants", make_qx_quants(min_max, a), a)
         show("offset_mean", anyrize_offset_mean(a, min_max, axis=axis), a)
         show("offset_min", anyrize_offset_min(a, 2 * min_max, axis=axis), a)
         show("offset_min_mean", anyrize_offset_min_mean(a, 2 * min_max, axis=axis), a)
