@@ -43,6 +43,8 @@ My main unsolved challenges right now:
 - Check if nested superblock rounding can be improved
 - Remove the need for sorting the components to find the best rounding scale
 - Find a fast enough general method to find **both** the best rounding offset *and* scale combination
+  - I *think* the `anyrize_offset_min_mean` function in `rounding.py` *might* be it.
+- Asymmetric zero-point quantization
 
 # Goals
 

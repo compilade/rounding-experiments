@@ -324,7 +324,9 @@ def anyrize_offset_mean(
 
     iscale = 2 * np.take_along_axis(iscales, mid, axis=axis)
 
-    q = np.clip(np_roundf(off / iscale), -abs(min_max), abs(min_max))
+    q = np.clip(
+        np_roundf(off * ((2**23 + 1) / (2**23)) / iscale), -abs(min_max), abs(min_max)
+    )
 
     # The scale is the correction on the plane between q and [1,1,1,...]
     # to the perpendicular (to [1,1,1,...]) projection of q compared to a.
@@ -381,8 +383,6 @@ def anyrize_offset_min(
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
 
-    # TODO: handle assymmetric quantization by making "odd" apply differently to positive and negative values
-    # TODO(research): heuristic for side with more precision?
     iscales = abs(ab) / odd
     ids = np.argsort(-iscales, axis=axis)
     sa = np.take_along_axis(ab, ids, axis=axis)
@@ -396,7 +396,9 @@ def anyrize_offset_min(
 
     iscale = 2 * np.take_along_axis(iscales, mid, axis=axis)
 
-    q = np.clip(np_roundf(off / iscale), 0, abs(nmax))
+    q = np.clip(
+        np_roundf((off * np.float32((2**23 + 1) / (2**23))) / iscale), 0, abs(nmax)
+    )
 
     # The scale is the correction on the plane between q and [1,1,1,...]
     # to the perpendicular (to [1,1,1,...]) projection of q compared to a.
@@ -448,31 +450,28 @@ def anyrize_offset_min_mean(
     off = np.min(a, axis=axis, keepdims=True)
     mea = np.mean(a, axis=axis, keepdims=True)
     shape = a.shape
-    odd = np.array([2 * i + 1 for i in range(nmax)], dtype=np.float32)
+    # WARNING: reversing the range is NECESSARY here, otherwise NANs for some reason.
+    odd = np.array([2 * i + 1 for i in range(nmax)[::-1]], dtype=np.float32)
     # TODO: does this only work for axis=-1 | None?
     ab, odd = np.broadcast_arrays(a[..., np.newaxis], odd)
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
 
-    # TODO: handle assymmetric quantization by making "odd" apply differently to positive and negative values
-    # TODO(research): heuristic for side with more precision?
-    # All the .5 --> 0.5 * (1, 3, 5, 7, 9,)
+    # All the .5 --> 0.5 * (..., 9, 7, 5, 3, 1,)
     iscales = (ab - off) / odd
-    ids = np.argsort(-iscales, axis=axis)
+    # WARNING: a stable sort is NECESSARY in conjunction with the reversed odd numbers
+    #          otherwise this sometimes produces NANs (not sure why exactly)
+    ids = np.argsort(-iscales, kind="stable", axis=axis)
     sa = np.take_along_axis(ab - mea, ids, axis=axis)
     so = np.take_along_axis(odd, ids, axis=axis)
 
     # Project the quantized vector on the hyperplane normal to [1,1,1,...]
     # and then calculate the squared cosine of the angle
-    c = np.cumsum(sa, axis=axis) - (
-        np.sum(sa, axis=axis, keepdims=True)
-        * np.cumsum(np.ones_like(sa), axis=axis)
-        / N
-    )
+    c = np.cumsum(sa, axis=axis)
     norms = np.cumsum(so, axis=axis) - (
         np.square(np.cumsum(np.ones_like(so), axis=axis)) / N
     )
-    with np.errstate(divide="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore"):
         cn = np.where(norms != 0, np.square(c) / norms, 0)
 
     # FIXME: Need the last max to avoid recalculating the scale later
@@ -480,13 +479,19 @@ def anyrize_offset_min_mean(
 
     iscale = 2 * np.take_along_axis(iscales, mid, axis=axis)
 
-    q = np.clip(np_roundf((a - off) / iscale), 0, abs(nmax))
+    q = np.clip(
+        np.where(
+            iscale != 0, np_roundf((a - off) * ((2**23 + 1) / (2**23)) / iscale), 0
+        ),
+        0,
+        abs(nmax),
+    )
 
     # The scale is the correction on the plane between q and [1,1,1,...]
     # to the perpendicular (to [1,1,1,...]) projection of q compared to a.
     # Apparently, projecting q on [1,1,1,...] is the same as taking its mean!!
-    centered = q - np.mean(q, axis=axis, keepdims=(axis is not None))
-    # FIXME: This isn't always the best scale
+    meaq = np.mean(q, axis=axis, keepdims=(axis is not None))
+    centered = q - meaq
     with np.errstate(divide="ignore"):
         sc = np.where(
             centered != 0,
@@ -499,9 +504,7 @@ def anyrize_offset_min_mean(
     # The cosine with the original a needs to be maximal.
     # Which means we need to find the closest point on the plane?
     # What is the min in that coordinate system?
-    mn = sc * np.mean(q, axis=axis, keepdims=(axis is not None)) - np.mean(
-        a, axis=axis, keepdims=(axis is not None)
-    )
+    mn = sc * meaq - mea
 
     sis = np.take_along_axis(iscales, ids, axis=axis)
 

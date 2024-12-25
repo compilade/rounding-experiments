@@ -76,6 +76,10 @@ cos = round_to_angle(plane)
 
 cos = cos.reshape((M, M))
 
+print(f"{np.min(cos)=}")
+print(f"{np.mean(cos)=}")
+print(f"{np.max(cos)=}")
+
 plt.figure()
 plt.imshow(cos)
 plt.show()
