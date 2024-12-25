@@ -8,7 +8,7 @@ import rounding
 # Real behavior of the rounding functions
 
 # [-n .. n]
-n = 7
+n = 4
 
 # pixels
 M = 512
@@ -16,6 +16,8 @@ M = 512
 # Ranges (to allow zooming to a particular region)
 # Rx = (0.74, 0.76)
 # Ry = (0.54, 0.56)
+Rx = (-0.05, 0.05)
+Ry = (-0.8, -0.7)
 Rx = (-1, 1)
 Ry = (-1, 1)
 
@@ -24,20 +26,32 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
 
     min_max = n
 
-    q = rounding.anyrize_inv_sq(a, min_max, axis=-1)
+    # q = rounding.anyrize_inv_sq(a, min_max, axis=-1)
     # q = rounding.absmax_dumb_round(a, min_max, axis=-1)
     # q = rounding.binary_offset(a, axis=-1)
-    # q = rounding.anyrize_offset_min_mean(a, min_max, axis=-1)
+    q = rounding.anyrize_offset_min_mean(-a, min_max * 2, axis=-1)
+    # q = rounding.offset_dumb_round(a, min_max, axis=-1)
+    # print(f"{a.shape=}")
+    # print(f"{q.q.shape=}")
+    # print(f"{q.v.shape=}")
     # q = rounding.make_qx_quants(min_max, a)
 
-    an = a / np.sqrt(np.sum(np.square(a), axis=-1, keepdims=True))
-    qn = q.q / np.sqrt(np.sum(np.square(q.q), axis=-1, keepdims=True))
+    # a = a * np.square(a)
+    # q.v = q.v * np.square(a)
+    w = np.square(a)
+    sumlx = np.sum(w * a * q.v, axis=-1, keepdims=True)
+    suml2 = np.sum(w * q.v * q.v, axis=-1, keepdims=True)
+    sumx2 = np.sum(w * a * a, axis=-1, keepdims=True)
+    return np.square(sumlx) / (suml2 * sumx2)
 
-    qs = np.clip(rounding.np_roundf(a / q.sc), -abs(min_max), abs(min_max))
-    qsn = qs / np.sqrt(np.sum(np.square(qs), axis=-1, keepdims=True))
+    # an = a / np.sqrt(np.sum(np.square(a), axis=-1, keepdims=True))
+    # qn = q.v / np.sqrt(np.sum(np.square(q.v), axis=-1, keepdims=True))
 
-    # return np.sum(an * qn, axis=-1)
-    return -np.sum(np.square(a - q.v), axis=-1)
+    # qs = np.clip(rounding.np_roundf(a / q.sc), -abs(min_max), abs(min_max))
+    # qsn = qs / np.sqrt(np.sum(np.square(qs), axis=-1, keepdims=True))
+
+    # return np.sum(qn * an, axis=-1)
+    return -np.sum(np.square(np.square(a) - np.square(q.v)), axis=-1)
     # Cool geometric shapes
     # return np.sum(qsn * qn, axis=-1)
     # assert q.sc is not None and q.iscale is not None
@@ -52,11 +66,16 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
     # )
 
     # return q.sc / np.max(abs(a), axis=-1, keepdims=True)
+    return np.max(abs(a), axis=-1, keepdims=True) / q.sc
     # np.sqrt(np.sum(a * a, axis=-1, keepdims=True))
 
     # s = np.sum(a * a, axis=-1, keepdims=True)
     # ss = s - a * a
     # return np.sum(ss, axis=-1, keepdims=True)
+
+
+rng = np.random.default_rng(42)
+a = rng.normal(size=(30,)).tolist()
 
 
 plane = np.array(
@@ -65,9 +84,11 @@ plane = np.array(
             Rx[0] + (Rx[1] - Rx[0]) * (i / (M - 1)),
             Ry[0] + (Ry[1] - Ry[0]) * (j / (M - 1)),
             1,
-            # 0.73,
-            # 0.8,
+            # # 0.73,
+            # # 0.8,
         ]
+        # + [1] * 29
+        # + a
         for i in range(M)
         for j in range(M)
     ]
@@ -97,5 +118,5 @@ prefix = {
 
 plt.figure(dpi=96, figsize=(cos.shape[-1] / 96, cos.shape[-2] / 96))
 plt.figimage(cos)
-plt.savefig(f"images/cube-face-round-{prefix}ary-{2*M}x{2*M}.png")
+plt.savefig(f"images/cube-face-round-sq-mm-{prefix}ary-{2*M}x{2*M}.png")
 plt.close()

@@ -31,7 +31,12 @@ def np_roundf(n: np.ndarray) -> np.ndarray:
     return np.sign(n) * b
 
 
-def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None):
+def anyrize_inv_sq(
+    a: np.ndarray,
+    min_max: int,
+    axis: Literal[-1] | None = None,
+    w: np.ndarray | None = None,
+):
     # All the .5 --> 0.5 * (1, 3, 5, 7, 9,)
     # sort?
     # find the corresponding scales <--
@@ -47,13 +52,15 @@ def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None)
     # round?
     # Okay, let's implement that.
     a = a.astype(np.float32, copy=False)
+    w = np.square(a) if w is None else w
     shape = a.shape
     # All the .5 --> 0.5 * (1, 3, 5, 7, 9,)
     odd = np.array([1 + (2 * i) for i in range(min_max)], dtype=np.float32)
     # TODO: does this only work for axis=-1 | None?
-    ab, odd = np.broadcast_arrays(a[..., np.newaxis], odd)
+    ab, odd, wb = np.broadcast_arrays(a[..., np.newaxis], odd, w[..., np.newaxis])
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
+    wb = wb.reshape((*shape[:-1], -1))
     # TODO: how to skip some thresholds for some numbers? Should that be done?
 
     # TODO: handle assymmetric quantization by making "odd" apply differently to positive and negative values
@@ -68,10 +75,12 @@ def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None)
     ids = np.argsort(-iscales, axis=axis)
     sa = np.take_along_axis(ab, ids, axis=axis)
     so = np.take_along_axis(odd, ids, axis=axis)
+    sw = np.take_along_axis(wb, ids, axis=axis)
 
-    # Calculate the squared cosine for all distinct rounding scales
-    c = np.cumsum(abs(sa), axis=axis)
-    cn = (np.square(c)) / np.cumsum(so, axis=axis)
+    # Calculate the weighted squared cosine for all distinct rounding scales
+    sumlx = np.cumsum(sw * abs(sa), axis=axis)
+    suml2 = np.cumsum(sw * so, axis=axis)
+    cn = (np.square(sumlx)) / suml2
 
     # FIXME: Need the last max to avoid recalculating the scale later
     mid = np.take_along_axis(ids, np.argmax(cn, axis=axis, keepdims=True), axis=axis)
@@ -86,8 +95,9 @@ def anyrize_inv_sq(a: np.ndarray, min_max: int, axis: Literal[-1] | None = None)
         abs(min_max),
     )
 
-    sc = np.sum(q * a, axis=axis, keepdims=(axis is not None)) / np.sum(
-        q * q, axis=axis, keepdims=(axis is not None)
+    # weighted projection scale
+    sc = np.sum(w * q * a, axis=axis, keepdims=(axis is not None)) / np.sum(
+        w * q * q, axis=axis, keepdims=(axis is not None)
     )
 
     sis = np.take_along_axis(iscales, ids, axis=axis)
@@ -377,14 +387,14 @@ def anyrize_offset_min(
     off = a - np.min(a, axis=axis, keepdims=True)
     shape = a.shape
     # All the .5 --> 0.5 * (1, 3, 5, 7, 9,)
-    odd = np.array([1 + (2 * i) for i in range(nmax)], dtype=np.float32)
+    odd = np.array([1 + (2 * i) for i in range(nmax)[::-1]], dtype=np.float32)
     # TODO: does this only work for axis=-1 | None?
     ab, odd = np.broadcast_arrays(off[..., np.newaxis], odd)
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
 
     iscales = abs(ab) / odd
-    ids = np.argsort(-iscales, axis=axis)
+    ids = np.argsort(-iscales, kind="stable", axis=axis)
     sa = np.take_along_axis(ab, ids, axis=axis)
     so = np.take_along_axis(odd, ids, axis=axis)
 
@@ -423,6 +433,8 @@ def anyrize_offset_min(
 
     sis = np.take_along_axis(iscales, ids, axis=axis)
 
+    # print(f"{q.shape=}, {sc.shape=}, {mn.shape=}")
+    # print(f"{q=}, {sc=}, {mn=}")
     # print(q * sc - mn)
     return QuantInfo(
         v=q * sc - mn,
@@ -434,8 +446,52 @@ def anyrize_offset_min(
     )
 
 
+def corr(l, x, w=None, centered=False):
+    if w is not None:
+        w = w / w.sum()
+    if centered:
+        if w is not None:
+            lmu = np.dot(l, w)
+            xmu = np.dot(x, w)
+        else:
+            lmu = np.mean(l)
+            xmu = np.mean(x)
+        l = l - lmu
+        x = x - xmu
+    if w is not None:
+        xw = x * w
+        lw = l * w
+    else:
+        xw, lw = x, l
+    sumlx = np.dot(l, xw)
+    suml2 = np.dot(l, lw)
+    sumx2 = np.dot(x, xw)
+    dist = 1.0 - sumlx / np.sqrt(suml2 * sumx2)
+
+
+def corr_div(l, x, w=None, centered=False):
+    if w is None:
+        w = np.ones_like(x)
+    sumw = w.sum()
+    if centered:
+        lmu = np.dot(l, w) / sumw
+        xmu = np.dot(x, w) / sumw
+        l = l - lmu
+        x = x - xmu
+    xw = x * w
+    lw = l * w
+    sumlx = np.dot(l, xw)
+    suml2 = np.dot(l, lw)
+    sumx2 = np.dot(x, xw)
+    dist = 1.0 - sumlx / np.sqrt(suml2 * sumx2)
+    # ...
+
+
 def anyrize_offset_min_mean(
-    a: np.ndarray, nmax: int, axis: Literal[-1] | None = None
+    a: np.ndarray,
+    nmax: int,
+    axis: Literal[-1] | None = None,
+    w: np.ndarray | None = None,
 ) -> QuantInfo:
     # Two steps which minimize the squared difference
     # One step would be the squared median
@@ -446,43 +502,51 @@ def anyrize_offset_min_mean(
     # But is it really? Maybe not? Need a proof!
     # Do both directions need to be tried?
     a = a.astype(np.float32, copy=False)
+    w = np.square(a) if w is None else w
     N = a.size if axis is None else a.shape[axis]
     off = np.min(a, axis=axis, keepdims=True)
-    mea = np.mean(a, axis=axis, keepdims=True)
+    # weighted mean
+    sumw = np.sum(w, axis=axis, keepdims=(axis is not None))
+    mea = np.sum(w * a, axis=axis, keepdims=True) / sumw
     shape = a.shape
     # WARNING: reversing the range is NECESSARY here, otherwise NANs for some reason.
     odd = np.array([2 * i + 1 for i in range(nmax)[::-1]], dtype=np.float32)
     # TODO: does this only work for axis=-1 | None?
-    ab, odd = np.broadcast_arrays(a[..., np.newaxis], odd)
+    ab, odd, wb = np.broadcast_arrays(a[..., np.newaxis], odd, w[..., np.newaxis])
     ab = ab.reshape((*shape[:-1], -1))
     odd = odd.reshape((*shape[:-1], -1))
+    wb = wb.reshape((*shape[:-1], -1))
 
     # All the .5 --> 0.5 * (..., 9, 7, 5, 3, 1,)
-    iscales = (ab - off) / odd
+    scales = (ab - off) / odd
     # WARNING: a stable sort is NECESSARY in conjunction with the reversed odd numbers
     #          otherwise this sometimes produces NANs (not sure why exactly)
-    ids = np.argsort(-iscales, kind="stable", axis=axis)
+    ids = np.argsort(-scales, kind="stable", axis=axis)
     sa = np.take_along_axis(ab - mea, ids, axis=axis)
     so = np.take_along_axis(odd, ids, axis=axis)
+    sw = np.take_along_axis(wb, ids, axis=axis)
 
     # Project the quantized vector on the hyperplane normal to [1,1,1,...]
     # and then calculate the squared cosine of the angle
-    c = np.cumsum(sa, axis=axis)
-    norms = np.cumsum(so, axis=axis) - (
-        np.square(np.cumsum(np.ones_like(so), axis=axis)) / N
-    )
+    sumlx = np.cumsum(sw * sa, axis=axis)
+
+    # FIXME: this is likely wrong
+    # centered cumulative suml2 ?
+    norms = np.cumsum(sw * so, axis=axis) - (np.square(np.cumsum(sw, axis=axis))) / sumw
+    # suml2 = sw * np.cumsum()
     with np.errstate(divide="ignore", invalid="ignore"):
-        cn = np.where(norms != 0, np.square(c) / norms, 0)
+        cn = np.where(norms != 0, np.square(sumlx) / norms, 0)
 
     # FIXME: Need the last max to avoid recalculating the scale later
     mid = np.take_along_axis(ids, np.argmax(cn, axis=axis, keepdims=True), axis=axis)
 
-    iscale = 2 * np.take_along_axis(iscales, mid, axis=axis)
+    # TODO: build from corresponding odd and a
+    scale = np.take_along_axis(scales, mid, axis=axis)
+    with np.errstate(divide="ignore"):
+        iscale = np.where(scale != 0, 1 / (2 * scale) * ((2**23 + 1) / (2**23)), 0)
 
     q = np.clip(
-        np.where(
-            iscale != 0, np_roundf((a - off) * ((2**23 + 1) / (2**23)) / iscale), 0
-        ),
+        np_roundf((a - off) * iscale),
         0,
         abs(nmax),
     )
@@ -490,15 +554,15 @@ def anyrize_offset_min_mean(
     # The scale is the correction on the plane between q and [1,1,1,...]
     # to the perpendicular (to [1,1,1,...]) projection of q compared to a.
     # Apparently, projecting q on [1,1,1,...] is the same as taking its mean!!
-    meaq = np.mean(q, axis=axis, keepdims=(axis is not None))
+    meaq = np.sum(w * q, axis=axis, keepdims=(axis is not None)) / sumw
     centered = q - meaq
-    with np.errstate(divide="ignore"):
-        sc = np.where(
-            centered != 0,
-            np.sum(centered * a, axis=axis, keepdims=(axis is not None))
-            / np.sum(centered * centered, axis=axis, keepdims=(axis is not None)),
-            0,
-        )
+    # FIXME: weighted
+    centersum = np.sum(w * np.square(centered), axis=axis, keepdims=(axis is not None))
+    sc = np.where(
+        centersum != 0,
+        np.sum(w * centered * a, axis=axis, keepdims=(axis is not None)) / centersum,
+        0,
+    )
 
     # The min can rotate the vector on the plane between q and [1,1,1,...]
     # The cosine with the original a needs to be maximal.
@@ -506,7 +570,9 @@ def anyrize_offset_min_mean(
     # What is the min in that coordinate system?
     mn = sc * meaq - mea
 
-    sis = np.take_along_axis(iscales, ids, axis=axis)
+    print(f"{mn=}")
+
+    sis = np.take_along_axis(scales, ids, axis=axis)
 
     # print(q * sc - mn)
     return QuantInfo(
@@ -672,11 +738,15 @@ if __name__ == "__main__":
                 32,
             )
         )
+        # a = np.array([1, 0.151, 0.149])
 
         min_max = 7
         axis = -1
 
         print(a)
+        print(
+            f"{np.max(a, axis=axis)=}\n{np.mean(a, axis=axis)=}\n{np.min(a, axis=axis)=}"
+        )
         show("inv_sq", anyrize_inv_sq(a, min_max, axis=axis), a)
         show("inv_sqrt", anyrize_inv_sqrt(a, min_max, axis=axis), a)
         show("sq", anyrize_sq(a, min_max, axis=axis), a)
@@ -684,7 +754,11 @@ if __name__ == "__main__":
         show("qx_quants", make_qx_quants(min_max, a), a)
         show("offset_mean", anyrize_offset_mean(a, min_max, axis=axis), a)
         show("offset_min", anyrize_offset_min(a, 2 * min_max, axis=axis), a)
+        show("offset_min_n", anyrize_offset_min(-a, 2 * min_max, axis=axis), -a)
         show("offset_min_mean", anyrize_offset_min_mean(a, 2 * min_max, axis=axis), a)
+        show(
+            "offset_min_mean_n", anyrize_offset_min_mean(-a, 2 * min_max, axis=axis), -a
+        )
         show("offset_dumb", offset_dumb_round(a, min_max, axis=axis), a)
         show("absmax", absmax_round(a, min_max, axis=axis), a)
         show("absmax_dumb", absmax_dumb_round(a, min_max, axis=axis), a)
