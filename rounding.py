@@ -556,7 +556,6 @@ def anyrize_offset_min_mean(
     # Apparently, projecting q on [1,1,1,...] is the same as taking its mean!!
     meaq = np.sum(w * q, axis=axis, keepdims=(axis is not None)) / sumw
     centered = q - meaq
-    # FIXME: weighted
     centersum = np.sum(w * np.square(centered), axis=axis, keepdims=(axis is not None))
     sc = np.where(
         centersum != 0,
