@@ -9,22 +9,24 @@ import rounding_c
 # Real behavior of the rounding functions
 
 # [-n .. n]
-n = 4
+n = 15
 
 # pixels
-M = 512
+M = 1024
+M = 1025
+M = 2048
 
 # Ranges (to allow zooming to a particular region)
 # Rx = (0.74, 0.76)
 # Ry = (0.54, 0.56)
 Rx = (-0.05, 0.05)
 Ry = (-0.8, -0.7)
-Rx = (-1, 1)
-Ry = (-1, 1)
-# Rx = (0, 1)
-# Ry = (0, 1)
-# Rx = (0.9, 1)
-# Ry = (0.9, 1)
+# Rx = (-1, 1)
+# Ry = (-1, 1)
+Rx = (0, 1)
+Ry = (0, 1)
+# Rx = (-0.125, 0.125)
+# Ry = (-0.125, 0.125)
 # Rx = (0, 1/4)
 # Ry = (0, 1/16)
 # Ry = (5/511, 6/511)
@@ -50,11 +52,11 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
 
     min_max = n
 
-    qw = np.sqrt(
-        np.sum(np.square(a), axis=-1, keepdims=True)
-        / np.sum(np.ones_like(a), axis=-1, keepdims=True)
-    ) + np.abs(a)
-    # qw = np.square(a)
+    # qw = np.sqrt(
+    #     np.sum(np.square(a), axis=-1, keepdims=True)
+    #     / np.sum(np.ones_like(a), axis=-1, keepdims=True)
+    # ) + np.abs(a)
+    qw = np.square(a)
     # qw = np.ones_like(a)
     # qw = None
 
@@ -236,5 +238,5 @@ prefix = {
 
 plt.figure(dpi=96, figsize=(cos.shape[-1] / 96, cos.shape[-2] / 96))
 plt.figimage(cos)
-plt.savefig(f"images/cube-face-round-sq-qx-{prefix}ary-{M}x{M}.png")
+plt.savefig(f"images/cube-face-round-min-{prefix}ary-{M}x{M}.png")
 plt.close()

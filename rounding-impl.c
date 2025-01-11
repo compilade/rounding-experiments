@@ -978,9 +978,14 @@ static int compare_qkxsm_hepler(const void * a, const void * b) {
     return (a_f == b_f) ? (a > b ? 1 : -1) : (a_f < b_f ? 1 : -1);
 }
 
+#define FIXED_POINT_EPS (1.0f/(1 << 20))
+
 // exhaustive search with cumulative sums, and a min
 // Need Faux to have room for n*(nmax + 1) fractions
 static float make_qkxcm_quants(int n, int nmax, const float * restrict x, const float * restrict weights, uint8_t * restrict L, float * restrict the_min, struct fraction * restrict Faux, uint8_t * restrict Laux) { // , float * restrict aux, uint8_t * restrict Laux) {
+    // const bool trace = fabsf(x[0] - (-0.125f + 512.f/1024.f*0.25f)) < 1e-6 && fabsf(x[1] - (-0.125f + 205.f/1024.f*0.25f)) < 1e-6 && x[2] == 1;
+    // const bool trace = fabsf(x[0] - (-1.f + 512.f/1024.f*2.f)) < 1e-6 && fabsf(x[1] - (-1.f + 205.f/1024.f*2.f)) < 1e-6 && x[2] == 1;
+    const bool trace = fabsf(x[0] - (-1.f + 2047.f/2047.f*2.f)) < 1e-6 && fabsf(x[1] - (-1.f + 61.f/2047.f*2.f)) < 1e-6 && x[2] == 1;
     float max = x[0];
     float min = x[0];
     float sum_w = weights[0];
@@ -1081,24 +1086,33 @@ static float make_qkxcm_quants(int n, int nmax, const float * restrict x, const 
 
                     // Project the vectors onto the hyperplane normal to 1
                     // const float sumlxm = sumlx - sumxm;
-                    const float sumlxm = sumlx - (suml * mean_x); // same as (proto_scale / sum_w)
+                    const float sumlxm = sumlx - (suml * sum_x / sum_w); // same as (proto_scale / sum_w)
                     // the squared norm also needs to be projected
-                    const float suml2m = suml2 - (suml * (suml / sum_w)); // same as (D / sum_w)
+                    const float suml2m = suml2 - (suml * suml / sum_w); // same as (D / sum_w)
                     // const float suml2m = D / sum_w; // same as (D / sum_w)
 
                     const float normm = suml2m * sum_x2m;
-                    float projm = sumlxm * sumlxm;
-                    projm += correction * (normm - projm);
+                    const float projm_centered = sumlxm * sumlxm;
+                    // FIXME: this isn't precise enough
+                    const float projm = projm_centered + correction * (normm - projm_centered);
 
-                    // fprintf(stderr, "%s: [%d] projm / normm = %f, proj / norm = %f\n", __func__, i, projm / normm, proj / norm);
-                    if (normm > 0.0f && projm * norm > proj * normm) {
+                    // TODO: make the algorithm more stable and remove the small fudging
+                    // What about the squared error instead? Can that be calculated cumulatively too?
+                    if (trace) {
+                        fprintf(stderr, "%s: [%d] projm / normm = %g / %g = %f, proj / norm = %g / %g = %f\n", __func__, i, projm, normm, projm / normm, proj, norm, proj / norm);
+                    }
+                    if (normm > FIXED_POINT_EPS && normm >= projm && projm * norm > proj * normm) {
+                        if (trace) {
+                            fprintf(stderr, "%s: [%d] (projm * norm = %g * %g = %g) > (proj * normm = %g * %g = %g)\n", __func__, i, projm, norm, projm * norm, proj, normm, proj * normm);
+                        }
                         proj = projm;
                         norm = normm;
+                    } else {
+                        proto_min = 0.0f;
                     }
                 }
                 // maximize the weighted correlation
-                // TODO: make the algorithm more stable and remove the small fudging
-                if (norm > 0.0f && proj * best_norm > best_proj * norm /* (((float)((1 << 23) + 4)) / ((float)(1 << 23)))*/) {
+                if (norm > 0.0f && proj * best_norm > best_proj * norm) {
                     best_proj = proj;
                     best_norm = norm;
                     if (proto_min < 0.0f) {
@@ -1135,6 +1149,17 @@ static float make_qkxcm_quants(int n, int nmax, const float * restrict x, const 
                     }
                 }
             }
+            if (trace) {
+                fprintf(stderr, "%s: [%i] proj=%g, norm=%g, scale=%g, min=%g, L=[%i", __func__, i, best_proj, best_norm, scale, this_min, L[0]);
+                for (int j = 1; j < n; ++j) {
+                    fprintf(stderr, ", %i", L[j]);
+                }
+                fprintf(stderr, "], v=[%g", L[0] * scale + this_min);
+                for (int j = 1; j < n; ++j) {
+                    fprintf(stderr, ", %g", L[j] * scale + this_min);
+                }
+                fprintf(stderr, "]\n");
+            }
         }
     }
 
@@ -1150,12 +1175,12 @@ static float make_qkxcm_quants(int n, int nmax, const float * restrict x, const 
             sumx2 += w * x[i] * x[i];
         }
         float cos = sumvx / sqrtf(sumv2 * sumx2);
-        if (cos < 0.5 || sumv2 * sumx2 == 0.0f) {
+        if (trace && (cos < 0.5 || sumv2 * sumx2 == 0.0f)) {
             fprintf(stderr, "%s: small cos=%f (%f / sqrt(%f * %f)), scale=%f, min=%f\n", __func__, cos, sumvx, sumv2, sumx2, scale, -this_min);
             for (int i = 0; i < n; ++i) {
                 float w = weights[i];
                 float v = L[i] * scale + this_min;
-                fprintf(stderr, "x[%i]=%f,\tv[%i]=%f,\tw[%i]=%f\n", i, x[i], i, v, i, w);
+                fprintf(stderr, "x[%i]=%.8f,\tv[%i]=%f,\tw[%i]=%f\n", i, x[i], i, v, i, w);
             }
         }
     }
@@ -1359,7 +1384,7 @@ void anyrize_qkx2_q4_k(const float * x, float * v, int ne0, int ne1, int nmax) {
         float av_x = sqrtf(sum_x2/ne0);
         for (int l = 0; l < ne0; ++l) {
             weights[l] = av_x + fabsf(x[ne0*i + l]);
-            // // weights[l] = x[ne0*i + l] * x[ne0*i + l];
+            weights[l] = x[ne0*i + l] * x[ne0*i + l];
             // weights[l] = 1;
         }
         float scale = make_qkx2_quants(ne0, nmax, x + i*ne0, weights, L, &the_min, Laux, -1.f, 0.1f, 20, false);
@@ -1383,8 +1408,8 @@ void anyrize_qkxcm_q4_k(const float * x, float * v, int ne0, int ne1, int nmax) 
         float av_x = sqrtf(sum_x2/ne0);
         for (int l = 0; l < ne0; ++l) {
             weights[l] = av_x + fabsf(x[ne0*i + l]);
-            // weights[l] = x[ne0*i + l] * x[ne0*i + l];
-            weights[l] = 1;
+            weights[l] = x[ne0*i + l] * x[ne0*i + l];
+            // weights[l] = 1;
         }
         float scale = make_qkxcm_quants(ne0, nmax, x + i*ne0, weights, L, &the_min, Faux, Laux);
         for (int j = 0; j < ne0; ++j) {
