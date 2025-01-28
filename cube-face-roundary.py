@@ -65,10 +65,10 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
     # v = rounding_c.anyrize_iq4nl(a, qw=qw)
     # v = rounding_c.anyrize_q3(a, min_max)
     # v = rounding_c.anyrize_qp(a, min_max, qw=qw)
-    # v = rounding_c.anyrize_qkxs_iq4nl(a, qw=qw)
+    v = rounding_c.anyrize_qkxs_iq4nl(a, qw=qw)
     # v = rounding_c.anyrize_qkxs_iq4nl_signed(a, qw=qw)
     # v = rounding_c.anyrize_qkx2_q4_k(a, min_max)
-    v = rounding_c.anyrize_qkxcm_q4_k(a, min_max)
+    # v = rounding_c.anyrize_qkxcm_q4_k(a, min_max)
 
     # q = rounding.anyrize_inv_sq(a, min_max, axis=-1)
     # q = rounding.absmax_dumb_round(a, min_max, axis=-1)
@@ -238,5 +238,5 @@ prefix = {
 
 plt.figure(dpi=96, figsize=(cos.shape[-1] / 96, cos.shape[-2] / 96))
 plt.figimage(cos)
-plt.savefig(f"images/cube-face-round-min-{prefix}ary-{M}x{M}.png")
+plt.savefig(f"images/cube-face-round-iq4nl-{prefix}ary-{M}x{M}.png")
 plt.close()

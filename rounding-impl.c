@@ -870,9 +870,7 @@ static float make_qkxs_quants(int n, int nmin, int nmax, const float * restrict 
 
 // non-linear exhaustive search with cumulative sums
 // Need Faux to have room for n*k fractions
-static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const float * restrict weights, const int8_t * restrict kvalues, uint8_t * restrict L, uint8_t * restrict Laux, struct fraction * restrict Faux) {
-    float max = 0.0f;
-    float amax = 0.0f;
+static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const float * restrict weights, const int8_t * restrict kvalues, uint8_t * restrict L, uint8_t * restrict Laux, struct fraction * restrict Faux, bool signed_scale) {
     float sumlx = 0.0f;
     float suml2 = 0.0f;
     int kmin = abs(kvalues[0]);
@@ -886,66 +884,50 @@ static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const f
     }
     kmin = kvalues[koff];
     for (int i = 0; i < n; ++i) {
-        Laux[i] = koff;
-        L[i] = koff;
-        float ax = fabsf(x[i]);
-        if (ax > amax) {
-            amax = ax;
-            max = x[i];
-        }
         float w = weights ? weights[i] : x[i] * x[i];
+        Laux[i] = koff;
         sumlx += w * x[i] * kmin;
         suml2 += w * kmin * kmin;
     }
 
-    int n_frac = 0;
+    int n_frac_p = 0;
     for (int i = 0; i < n; ++i) {
-        if (x[i] < 0.0f) {
-            for (int j = koff; 0 < j; --j) {
-                const float threshold = kvalues[j] + kvalues[j - 1];
-                const float step = kvalues[j - 1] - kvalues[j]; // this should be negative
-                Faux[n_frac++] = (struct fraction){
-                    // This should always be positive or else
-                    // the fraction comparison function won't work properly
-                    // FIXME: think about signs
-                    .numer=x[i] * step,
-                    // It's amazing how this is still the difference of consecutive squares
-                    .denom=threshold * step,
-                    .i=i,
-                };
-            }
-        } else {
-            for (int j = koff + 1; j < k; ++j) {
-                const float threshold = kvalues[j] + kvalues[j - 1];
-                const float step = kvalues[j] - kvalues[j - 1];
-                Faux[n_frac++] = (struct fraction){
-                    .numer=x[i] * step,
-                    .denom=threshold * step,
-                    .i=i,
-                };
-            }
+        const int start = x[i] < 0.0f ? 1 : koff + 1;
+        const int end = x[i] < 0.0f ? koff + 1: k;
+        for (int j = start; j < end; ++j) {
+            const float threshold = kvalues[j] + kvalues[j - 1];
+            const float step = kvalues[j] - kvalues[j - 1];
+            Faux[n_frac_p++] = (struct fraction){
+                // This should always be positive or else
+                // the fraction comparison function won't work properly
+                .numer=fabsf(x[i] * step),
+                // It's amazing how this is still the difference of consecutive squares
+                .denom=fabsf(threshold * step),
+                .i=i,
+            };
         }
     }
 
-    qsort(Faux, n_frac, sizeof(struct fraction), compare_fractions_desc);
+    qsort(Faux, n_frac_p, sizeof(struct fraction), compare_fractions_desc);
 
     float best = 0.0f;
     float best_sumlx = 0.0f;
     float best_suml2 = 1.0f;
-    int best_i = -1;
-    for (int i = 0; i < n_frac; ++i) {
+    float sumlx_p = sumlx;
+    float suml2_p = suml2;
+    int best_p_i = -2; // not consecutive with 0..n_frac
+    for (int i = 0; i < n_frac_p; ++i) {
         const int ii = Faux[i].i;
         const float w = weights ? weights[ii] : x[ii] * x[ii];
-        sumlx += w * Faux[i].numer;
-        suml2 += w * Faux[i].denom;
-        const float current = sumlx * sumlx;
+        sumlx_p += w * Faux[i].numer;
+        suml2_p += w * Faux[i].denom;
+        const float current = sumlx_p * sumlx_p;
         Laux[ii] += x[ii] < 0.0f ? -1 : 1;
-        // use the last in case of equality
-        if (suml2 > 0.0f && current * best_suml2 >= best * suml2) {
+        if (suml2_p > 0.0f && current * best_suml2 > best * suml2_p) {
             best = current;
-            best_sumlx = sumlx;
-            best_suml2 = suml2;
-            if (i == best_i + 1) {
+            best_sumlx = sumlx_p;
+            best_suml2 = suml2_p;
+            if (i == best_p_i + 1) {
                 // reduce copies for consecutive bests
                 L[ii] += x[ii] < 0.0f ? -1 : 1;
             } else {
@@ -953,7 +935,60 @@ static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const f
                     L[j] = Laux[j];
                 }
             }
-            best_i = i;
+            best_p_i = i;
+        }
+    }
+
+    // Non-linear mappings are usually not symmetric, so try negating the scale
+    if (signed_scale) {
+        for (int i = 0; i < n; ++i) {
+            Laux[i] = koff;
+        }
+
+        int n_frac_n = 0;
+        for (int i = 0; i < n; ++i) {
+            const int start = x[i] >= 0.0f ? 1 : koff + 1;
+            const int end = x[i] >= 0.0f ? koff + 1: k;
+            for (int j = start; j < end; ++j) {
+                const float threshold = kvalues[j] + kvalues[j - 1];
+                const float step = kvalues[j] - kvalues[j - 1];
+                Faux[n_frac_n++] = (struct fraction){
+                    // This should always be positive or else
+                    // the fraction comparison function won't work properly
+                    .numer=fabsf(x[i] * step),
+                    // It's amazing how this is still the difference of consecutive squares
+                    .denom=fabsf(threshold * step),
+                    .i=i,
+                };
+            }
+        }
+
+        qsort(Faux, n_frac_n, sizeof(struct fraction), compare_fractions_desc);
+
+        float sumlx_n = -sumlx;
+        float suml2_n = suml2;
+        int best_n_i = -2; // not consecutive with 0..n_frac
+        for (int i = 0; i < n_frac_n; ++i) {
+            const int ii = Faux[i].i;
+            const float w = weights ? weights[ii] : x[ii] * x[ii];
+            sumlx_n += w * Faux[i].numer;
+            suml2_n += w * Faux[i].denom;
+            const float current = sumlx_n * sumlx_n;
+            Laux[ii] += x[ii] >= 0.0f ? -1 : 1;
+            if (suml2_n > 0.0f && current * best_suml2 > best * suml2_n) {
+                best = current;
+                best_sumlx = -sumlx_n;
+                best_suml2 = suml2_n;
+                if (i == best_n_i + 1) {
+                    // reduce copies for consecutive bests
+                    L[ii] += x[ii] >= 0.0f ? -1 : 1;
+                } else {
+                    for (int j = 0; j < n; ++j) {
+                        L[j] = Laux[j];
+                    }
+                }
+                best_n_i = i;
+            }
         }
     }
 
@@ -1458,7 +1493,7 @@ void anyrize_qkxs_iq4nl(const float * x, const float * w, float * v, int ne0, in
     uint8_t Laux[ne0];
     struct fraction Faux[ne0 * 16];
     for (int i = 0; i < ne1; ++i) {
-        float scale = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, L, Laux, Faux);
+        float scale = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, L, Laux, Faux, false);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = kvalues_iq4nl[L[j]] * scale;
         }
@@ -1466,32 +1501,44 @@ void anyrize_qkxs_iq4nl(const float * x, const float * w, float * v, int ne0, in
 }
 
 void anyrize_qkxs_iq4nl_signed(const float * x, const float * w, float * v, int ne0, int ne1) {
-    uint8_t Lp[ne0];
-    uint8_t Ln[ne0];
+    uint8_t L[ne0];
     uint8_t Laux[ne0];
-    float neg_x[ne0];
     struct fraction Faux[ne0 * 16];
     for (int i = 0; i < ne1; ++i) {
+        float scale = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, L, Laux, Faux, true);
         for (int j = 0; j < ne0; ++j) {
-            neg_x[j] = -x[i*ne0 + j];
-        }
-        float scale_p = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, Lp, Laux, Faux);
-        float scale_n = make_qkxs_nl_quants(ne0, 16, neg_x, w ? w + i*ne0 : NULL, kvalues_iq4nl, Ln, Laux, Faux);
-        float sumlx_p = 0.0f;
-        float sumlx_n = 0.0f;
-        for (int j = 0; j < ne0; ++j) {
-            float ww = w ? w[i*ne0 + j] : x[i*ne0 + j] * x[i*ne0 + j];
-            sumlx_p += ww * x[i*ne0 + j] * kvalues_iq4nl[Lp[j]];
-            sumlx_n += ww * -x[i*ne0 + j] * kvalues_iq4nl[Ln[j]];
-        }
-        if (sumlx_n * scale_n > sumlx_p * scale_p) {
-            for (int j = 0; j < ne0; ++j) {
-                v[i*ne0 + j] = kvalues_iq4nl[Ln[j]] * -scale_n;
-            }
-        } else {
-            for (int j = 0; j < ne0; ++j) {
-                v[i*ne0 + j] = kvalues_iq4nl[Lp[j]] * scale_p;
-            }
+            v[i*ne0 + j] = kvalues_iq4nl[L[j]] * scale;
         }
     }
 }
+
+// void anyrize_qkxs_iq4nl_signed(const float * x, const float * w, float * v, int ne0, int ne1) {
+//     uint8_t Lp[ne0];
+//     uint8_t Ln[ne0];
+//     uint8_t Laux[ne0];
+//     float neg_x[ne0];
+//     struct fraction Faux[ne0 * 16];
+//     for (int i = 0; i < ne1; ++i) {
+//         for (int j = 0; j < ne0; ++j) {
+//             neg_x[j] = -x[i*ne0 + j];
+//         }
+//         float scale_p = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, Lp, Laux, Faux);
+//         float scale_n = make_qkxs_nl_quants(ne0, 16, neg_x, w ? w + i*ne0 : NULL, kvalues_iq4nl, Ln, Laux, Faux);
+//         float sumlx_p = 0.0f;
+//         float sumlx_n = 0.0f;
+//         for (int j = 0; j < ne0; ++j) {
+//             float ww = w ? w[i*ne0 + j] : x[i*ne0 + j] * x[i*ne0 + j];
+//             sumlx_p += ww * x[i*ne0 + j] * kvalues_iq4nl[Lp[j]];
+//             sumlx_n += ww * -x[i*ne0 + j] * kvalues_iq4nl[Ln[j]];
+//         }
+//         if (sumlx_n * scale_n > sumlx_p * scale_p) {
+//             for (int j = 0; j < ne0; ++j) {
+//                 v[i*ne0 + j] = kvalues_iq4nl[Ln[j]] * -scale_n;
+//             }
+//         } else {
+//             for (int j = 0; j < ne0; ++j) {
+//                 v[i*ne0 + j] = kvalues_iq4nl[Lp[j]] * scale_p;
+//             }
+//         }
+//     }
+// }
