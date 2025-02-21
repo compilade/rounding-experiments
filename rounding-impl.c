@@ -774,99 +774,456 @@ static inline int compare_fractions_desc(const void * a, const void * b) {
 
 // exhaustive search with cumulative sums
 // Need Faux to have room for n*(max(abs(nmin), abs(nmax))) fractions
-static float make_qkxs_quants(int n, int nmin, int nmax, const float * restrict x, const float * restrict weights, int8_t * restrict L, struct fraction * restrict Faux, bool signed_scale) {
-    float max = 0.0f;
-    float amax = 0.0f;
-    for (int i = 0; i < n; ++i) {
-        float ax = fabsf(x[i]);
-        if (ax > amax) {
-            amax = ax;
-            max = x[i];
+static float make_qkxs_quants(int n, int nmin, int nmax, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, struct fraction * restrict Faux, bool signed_scale) {
+    const bool trace = fabsf(x[0] - (-1.5f + 294.f/511.f*(2.f-(-1.5f)))) < 1e-6 && fabsf(x[1] - (-1.5f + 264.f/511.f*(2.f-(-1.5f)))) < 1e-6;
+    float max = x[0];
+    float min = x[0];
+    float w_amax = weights[0] * fabsf(x[0]);
+    float w_sqrtamax = exp2f(weights[0]) * fabsf(x[0]);
+    float w_max = weights[0] * x[0];
+    float w_min = weights[0] * x[0];
+    float w_max2 = weights[0] * x[0] * x[0];
+    int max_i = 0;
+    int w_max_i = 0;
+    int w_min_i = 0;
+    int w_amax_i = 0;
+    int w_sqrtamax_i = 0;
+    int w_max2_i = 0;
+    int min_i = 0;
+    float sumwx2 = weights[0] * x[0] * fabsf(x[0]);
+    for (int i = 1; i < n; ++i) {
+        if (x[i] < min) { min = x[i]; min_i = i; }
+        if (x[i] > max) { max = x[i]; max_i = i; }
+        // Find the most important value
+        const float w = weights[i];
+        const float wax = w * fabsf(x[i]);
+        if (wax > w_amax) {
+            w_amax = wax;
+            w_amax_i = i;
         }
-    }
-    bool negative_scale = false;
-    if (signed_scale && -nmin != nmax) {
-        // the max side should have the biggest range
-        if ((max < 0.0f) == (-nmin < nmax)) {
-            // [-4, 3] ==> [-3, 4]
-            int tmp = nmin;
-            nmin = -nmax;
-            nmax = -tmp;
-            negative_scale = true;
+        const float wx = w * x[i];
+        if (wx > w_max) { w_max = wx; w_max_i = i; }
+        if (wx < w_min) { w_min = wx; w_min_i = i; }
+        const float wasqrt = exp2f(w) * fabsf(x[i]);
+        if (wasqrt > w_sqrtamax) {
+            w_sqrtamax = wasqrt;
+            w_sqrtamax_i = i;
         }
+        const float wx2 = w * x[i] * x[i];
+        if (wx2 > w_max2) {
+            w_max2 = wx2;
+            w_max2_i = i;
+        }
+        sumwx2 += w * x[i] * fabsf(x[i]);
     }
+    const int amax_i = fabsf(min) > fabsf(max) ? min_i : max_i;
+    const float amax = fabsf(x[amax_i]);
+
     if (amax < GROUP_MAX_EPS) { // all zero
         for (int i = 0; i < n; ++i) {
             L[i] = 0;
         }
         return 0.0f;
     }
+    bool negative_scale = false;
+    if (signed_scale && -nmin != nmax) {
+        // the max side should have the biggest range
+        // FIXME: this is incorrect when the weights[.] do not sort in the same order as fabsf(x[.])
+        //        or is it some other condition?
+        // if ((fabsf(min) > fabsf(max)) == (-nmin < nmax)) {
+        if ((x[amax_i] < 0.0f) == (-nmin < nmax)) {
+        // if ((x[w_amax_i] < 0.0f) == (-nmin < nmax)) {
+        // if (((x[w_max2_i] < 0.0f == x[amax_i] < 0.0f) ? (x[amax_i] < 0.0f) : (sumwx2 < 0.0f)) == (-nmin < nmax)) {
+        // if ((sumwx2 < 0.0f) == (-nmin < nmax)) {
+        // if (((max * nmin) > (min * nmax)) == (-nmin < nmax)) {
+            // [-4, 3] ==> [-3, 4]
+            const int tmp = nmin;
+            const float ftmp = min;
+            nmin = -nmax;
+            nmax = -tmp;
+            min = -max;
+            max = -ftmp;
+            negative_scale = true;
+        }
+    }
+
+    // Find the max range in [0, amax_range] which doesn't result in clamping.
+    // This is the range from the side which would clamp first (biggest ratio of max to nmax).
+    // FIXME: make this saner
+    const int amax_range = MAX(0, (fabsf(-max * nmin) < fabsf(-min * nmax)) ? -nmin : nmax);
+    float sumlx = 0.0f;
+    float suml2 = 0.0f;
+    float scale = 0.0f;
+    float best = 0.0f;
+    float best_denom = 1.0f;
+    if (amax_range > 1) {
+        // The smallest non-redundant iscale makes the max half+1 its max integer value.
+        // Proof: anything smaller has a representable vector with values twice as big.
+        const float iscale = ((float)(amax_range / 2 + 1))/amax * (negative_scale ? -1.0f : 1.0f);
+        for (int i = 0; i < n; ++i) {
+            const float w = weights[i];
+            int l = MAX(nmin, MIN(lroundf(x[i] * iscale), nmax));
+            if (negative_scale) {
+                l = -l;
+            }
+            Laux[i] = l;
+            L[i] = l;
+            suml2 += w * l * l;
+            sumlx += w * l * x[i];
+        }
+        best = sumlx * sumlx;
+        best_denom = suml2; // should never be zero
+        scale = sumlx / suml2;
+    } else {
+        for (int i = 0; i < n; ++i) {
+            Laux[i] = 0;
+            L[i] = 0;
+        }
+    }
+
+    const int imax_range = MAX(0, (x[w_amax_i] < 0.0f) ? -nmin : nmax);
+    const int max_odd = 2*(imax_range + 1) + 1;
+    const float wmax = fabsf(x[w_amax_i]);
     int n_frac = 0;
     for (int i = 0; i < n; ++i) {
         // assuming nmin <= nmax
-        const int odd_max = MAX(0, x[i] < 0 ? -nmin : nmax);
-        const int odd_min = MAX(0, x[i] < 0 ? -nmax : nmin);
+        const int odd_max = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmin : nmax);
+        const int odd_min = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmax : nmin);
         const float v = fabsf(x[i]);
-        // fprintf(stderr, "%s: i=%d, odd_min=%d, odd_max=%d\n", __func__, i, odd_min, odd_max);
+        const float v_max_odd = v * max_odd;
         for (int j = odd_min; j < odd_max; ++j) {
             const float odd = 2*j + 1;
-            Faux[n_frac++] = (struct fraction){
-                .numer=v,
-                .denom=odd,
-                .i=i,
-            };
+            if (wmax * odd < v_max_odd) {
+                Faux[n_frac++] = (struct fraction){
+                    .numer=v,
+                    .denom=odd,
+                    .i=i,
+                };
+            } else {
+                // stop when the inverse scale would result in clamping the max (FIXME: most important) value
+                break;
+            }
         }
     }
 
     qsort(Faux, n_frac, sizeof(struct fraction), compare_fractions_desc);
 
-    float iscale = 0.0f;
-    {
+    int best_p_i = -1; // consecutive with 0..n_frac
+    for (int i = 0; i < n_frac; ++i) {
+        // maximize the weighted cosine
+        const int ii = Faux[i].i;
+        const float w = weights ? weights[ii] : x[ii] * x[ii];
+        sumlx += w * Faux[i].numer;
+        suml2 += w * Faux[i].denom;
+        const float current = sumlx * sumlx;
+        Laux[ii] += x[ii] < 0.0f ? -1 : 1;
+        if (trace) {
+            fprintf(stderr, "%s: [%i] Laux=[%i", __func__, i, Laux[0]);
+            for (int j = 1; j < n; ++j) {
+                fprintf(stderr, ", %i", Laux[j]);
+            }
+            fprintf(stderr, "]\n");
+        }
+        if (suml2 > 0.0f && Faux[i].numer > 0.0f && current * best_denom > best * suml2) {
+            best = current;
+            best_denom = suml2;
+            scale = sumlx / suml2;
+            if (i == best_p_i + 1) {
+                // reduce copies for consecutive bests
+                L[ii] += x[ii] < 0.0f ? -1 : 1;
+            } else {
+                for (int j = 0; j < n; ++j) {
+                    L[j] = Laux[j];
+                }
+            }
+            best_p_i = i;
+        }
+    }
+    if (trace) {
+        fprintf(stderr, "%s: x=[%g", __func__, x[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %g", x[j]);
+        }
+        fprintf(stderr, "], w=[%g", weights[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %g", weights[j]);
+        }
+        fprintf(stderr, "], L=[%i", L[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %i", L[j]);
+        }
+        fprintf(stderr, "]\n");
+    }
+
+    return scale;
+}
+
+
+// exhaustive search with cumulative sums
+// Need Faux to have room for n*(max(abs(nmin), abs(nmax))) fractions
+static float make_qkxs_quants_other(int n, int nmin, int nmax, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, struct fraction * restrict Faux, bool signed_scale) {
+    const bool trace = fabsf(x[0] - (-1.5f + 256.f/511.f*(2.f-(-1.5f)))) < 1e-6 && fabsf(x[1] - (-1.5f + 290.f/511.f*(2.f-(-1.5f)))) < 1e-6;
+    float max = x[0];
+    float min = x[0];
+    float amax = fabsf(x[0]);
+    float w_amax = weights[0] * amax;
+    int amax_i = 0;
+    int w_amax_i = 0;
+    for (int i = 1; i < n; ++i) {
+        const float w = weights[i];
+        const float ax = fabsf(x[i]);
+        const float wax = w * ax;
+        if (ax > amax) { amax = ax; amax_i = i; }
+        if (x[i] > max) { max = x[i]; }
+        if (x[i] < min) { min = x[i]; }
+        // Find the most important value
+        if (wax > w_amax) { w_amax = wax; w_amax_i = i; }
+    }
+
+    if (amax < GROUP_MAX_EPS) { // all zero
+        for (int i = 0; i < n; ++i) { L[i] = 0; }
+        return 0.0f;
+    }
+
+    int invert_sign = 0;
+    int invert_range = 2;
+    if (signed_scale && -nmin != nmax) {
+        if ((x[amax_i] < 0.0f) != (x[w_amax_i] < 0.0f)) {
+            // asymmetric with unknown best sign
+            invert_sign = 1;
+            invert_range = invert_sign + 4;
+        } else {
+            // the best sign is the max side
+            invert_sign = (x[amax_i] < 0.0f) == (-nmin < nmax) ? 1 : 0;
+            invert_range = invert_sign + 2;
+        }
+    }
+
+    float scale = 0.0f;
+    float best = 0.0f;
+    float best_denom = 1.0f;
+    for (;invert_sign < invert_range; invert_sign += 2) {
+        const bool negative_scale = (invert_sign & 1) != 0;
+        if (negative_scale) {
+            const int tmp = nmin;
+            const float ftmp = min;
+            nmin = -nmax;
+            nmax = -tmp;
+            min = -max;
+            max = -ftmp;
+        }
         float sumlx = 0.0f;
         float suml2 = 0.0f;
-        float best = 0.0f;
-        float best_denom = 1.0f;
+
+        int best_p_i = -2; // not consecutive with 0..n_frac
+
+        // Find the max range in [0, amax_range] which doesn't result in clamping.
+        // This is the range from the side which would clamp first (biggest ratio of max to nmax).
+        // TODO: tie with min and max to make iscale
+        const float amax_range = MAX(0, (fabsf(-max * nmin) < fabsf(-min * nmax)) ? -nmin : nmax);
+        if (amax_range > 1) {
+            // The smallest non-redundant iscale makes the max half+1 its max integer value.
+            // Proof: anything smaller has a representable vector with values twice as big.
+            // NOTE: the integer division is desired.
+            const float iscale = ((float)(amax_range / 2 + 1))/(fabsf(-max * nmin) < fabsf(-min * nmax) ? -min : max);
+            for (int i = 0; i < n; ++i) {
+                const float w = weights[i];
+                int l = MAX(nmin, MIN(lroundf(x[i] * iscale), nmax));
+                if (negative_scale) {
+                    l = -l;
+                }
+                Laux[i] = l;
+                suml2 += w * l * l;
+                sumlx += w * l * x[i];
+            }
+            if (trace) {
+                fprintf(stderr, "%s: Laux=[%i", __func__, Laux[0]);
+                for (int j = 1; j < n; ++j) {
+                    fprintf(stderr, ", %i", Laux[j]);
+                }
+                fprintf(stderr, "]\n");
+            }
+            const float current = sumlx * sumlx;
+            if (suml2 > 0.0f && current * best_denom > best * suml2) {
+                best = current;
+                best_denom = suml2;
+                scale = sumlx / suml2;
+                for (int i = 0; i < n; ++i) {
+                    L[i] = Laux[i];
+                }
+                best_p_i = -1; // right before 0 of the loop after sorting
+            }
+        } else {
+            for (int i = 0; i < n; ++i) {
+                Laux[i] = 0;
+            }
+        }
+
+        const int imax_range = MAX(0, (x[w_amax_i] < 0.0f) == negative_scale ? -nmin : nmax);
+        const int max_odd = 2*(imax_range + 1) + 1;
+        const float wmax = fabsf(x[w_amax_i]);
+        int n_frac = 0;
+        for (int i = 0; i < n; ++i) {
+            // assuming nmin <= nmax
+            const int odd_max = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmin : nmax);
+            const int odd_min = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmax : nmin);
+            const float v = fabsf(x[i]);
+            const float v_max_odd = v * max_odd;
+            for (int j = odd_min; j < odd_max; ++j) {
+                const float odd = 2*j + 1;
+                if (wmax * odd < v_max_odd) {
+                    Faux[n_frac++] = (struct fraction){
+                        .numer=v,
+                        .denom=odd,
+                        .i=i,
+                    };
+                } else {
+                    // stop when the inverse scale would result in clamping the max (FIXME: most important) value
+                    break;
+                }
+            }
+        }
+
+        qsort(Faux, n_frac, sizeof(struct fraction), compare_fractions_desc);
+
         for (int i = 0; i < n_frac; ++i) {
-            // maximize the weighted cosine
+            // maximize the weighted cosine similarity
             const int ii = Faux[i].i;
             const float w = weights ? weights[ii] : x[ii] * x[ii];
             sumlx += w * Faux[i].numer;
             suml2 += w * Faux[i].denom;
             const float current = sumlx * sumlx;
-            // fprintf(stderr, "%s: Faux[%d]=(%f/%f) * %f, square(sumlx)=%f, suml2=%f, k*cos2=%f\n", __func__, i, Faux[i].numer, Faux[i].denom, Faux[i].weight, current, suml2, current / suml2);
-            // use the last in case of equality
-            // FIXME: > or >= ?? Why does [0, 0, 1] rounds to [0, 0, 0] with >= ?
+            Laux[ii] += x[ii] < 0.0f ? -1 : 1;
             if (suml2 > 0.0f && Faux[i].numer > 0.0f && current * best_denom > best * suml2) {
                 best = current;
                 best_denom = suml2;
-                iscale = Faux[i].denom / (2.0f * Faux[i].numer);
-                if (!isfinite(iscale)) {
-                    fprintf(stderr, "%s: iscale is not finite, %f/(2*%f)\n", __func__, Faux[i].denom, Faux[i].numer);
+                scale = sumlx / suml2;
+                if (i == best_p_i + 1) {
+                    // reduce copies for consecutive bests
+                    L[ii] += x[ii] < 0.0f ? -1 : 1;
+                } else {
+                    for (int j = 0; j < n; ++j) {
+                        L[j] = Laux[j];
+                    }
                 }
+                best_p_i = i;
             }
         }
     }
-    // (very) small fudging necessary because floats otherwise round to nearest even
-    iscale = iscale * ((float)((1 << 23) + 1) / (float)(1 << 23));
-
-    float sumlx = 0.0f;
-    float suml2 = 0.0f;
-    for (int i = 0; i < n; ++i) {
-        // Rounding away from zero is assumed by the search algorithm above.
-        int l = MAX(nmin, MIN(lroundf(x[i] * iscale), nmax));
-        if (negative_scale) {
-            l = -l;
+    if (trace) {
+        fprintf(stderr, "%s: x=[%g", __func__, x[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %g", x[j]);
         }
-        L[i] = l;
-        float w = weights ? weights[i] : x[i] * x[i];
-        // weighted projection scale
-        sumlx += w * x[i] * l;
-        suml2 += w * l * l;
+        fprintf(stderr, "], w=[%g", weights[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %g", weights[j]);
+        }
+        fprintf(stderr, "], L=[%i", L[0]);
+        for (int j = 1; j < n; ++j) {
+            fprintf(stderr, ", %i", L[j]);
+        }
+        fprintf(stderr, "]\n");
+    }
+    /*
+    // Find the max range in [0, amax_range] which doesn't result in clamping.
+    // This is the range from the side which would clamp first (biggest ratio of max to nmax).
+    // FIXME: make this saner
+    const int common_range = MIN(abs(nmin), abs(nmax));
+    const int max_range = MAX(abs(nmin), abs(nmax));
+
+    bool negative_scale = false;
+
+    if (max_range > 1) {
+        // The smallest non-redundant iscale makes the max half+1 its max integer value.
+        // Proof: anything smaller has a representable vector with values twice as big.
+        const float iscale = ((float)(common_range / 2 + 1))/amax;
+        for (int i = 0; i < n; ++i) {
+            const float w = weights[i];
+            int l = MAX(nmin, MIN(lroundf(x[i] * iscale), nmax));
+            if (negative_scale) {
+                l = -l;
+            }
+            Laux[i] = l;
+            L[i] = l;
+            suml2 += w * l * l;
+            sumlx += w * l * x[i];
+        }
+        best = sumlx * sumlx;
+        best_denom = suml2; // should never be zero
+        scale = sumlx / suml2;
+    } else {
+        for (int i = 0; i < n; ++i) {
+            Laux[i] = 0;
+            L[i] = 0;
+        }
     }
 
-    return suml2 > 0.0f ? sumlx / suml2 : 0.0f;
-}
+    // ~~FIXME: this is only correct when the weights[.] are relatively close to proportional to x[.].~~
+    const int imax_range = MAX(0, (x[w_amax_i] < 0.0f) ? -nmin : nmax);
+    // const int imax_range = amax_range;
+    const int max_odd = 2*(imax_range + 1) + 1;
+    // const float sqrt_wmax = weights[amax_i];
+    const float wmax = fabsf(x[w_amax_i]);
+    int n_frac = 0;
+    for (int i = 0; i < n; ++i) {
+        // assuming nmin <= nmax
+        const int odd_max = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmin : nmax);
+        const int odd_min = MAX(abs(Laux[i]), x[i] < 0.0f ? -nmax : nmin);
+        const float v = fabsf(x[i]);
+        const float v_max_odd = v * max_odd;
+        // fprintf(stderr, "%s: i=%d, odd_min=%d, odd_max=%d\n", __func__, i, odd_min, odd_max);
+        for (int j = odd_min; j < odd_max; ++j) {
+            const float odd = 2*j + 1;
+            if (wmax * odd < v_max_odd) {
+                Faux[n_frac++] = (struct fraction){
+                    .numer=v,
+                    .denom=odd,
+                    .i=i,
+                };
+            } else {
+                // stop when the inverse scale would result in clamping the max (FIXME: most important) value
+                break;
+            }
+        }
+    }
+    // fprintf(stderr, "(%d)", n_frac);
 
+    qsort(Faux, n_frac, sizeof(struct fraction), compare_fractions_desc);
+
+    int best_p_i = -1; // consecutive with 0..n_frac
+    // int overwrite = 0;
+    for (int i = 0; i < n_frac; ++i) {
+        // maximize the weighted cosine
+        const int ii = Faux[i].i;
+        const float w = weights ? weights[ii] : x[ii] * x[ii];
+        sumlx += w * Faux[i].numer;
+        suml2 += w * Faux[i].denom;
+        const float current = sumlx * sumlx;
+        Laux[ii] += x[ii] < 0.0f ? -1 : 1;
+        if (suml2 > 0.0f && Faux[i].numer > 0.0f && current * best_denom > best * suml2) {
+            best = current;
+            best_denom = suml2;
+            scale = sumlx / suml2;
+            if (i == best_p_i + 1) {
+                // reduce copies for consecutive bests
+                L[ii] += x[ii] < 0.0f ? -1 : 1;
+            } else {
+                for (int j = 0; j < n; ++j) {
+                    L[j] = Laux[j];
+                }
+                // overwrite += 1;
+                // fprintf(stderr, "{%d:%d}", overwrite, i - best_p_i);
+            }
+            best_p_i = i;
+        }
+    }
+    */
+    // fprintf(stderr, "(%d/%d)", n_frac - best_p_i - 1, n_frac);
+    // fprintf(stderr, "{%d}", overwrite);
+
+    return scale;
+}
 
 // non-linear exhaustive search with cumulative sums
 // Need Faux to have room for n*k fractions
@@ -996,7 +1353,7 @@ static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const f
 }
 
 static void merge_sorted(struct fraction * restrict dest, const struct fraction * restrict a, const struct fraction * restrict b, int k) {
-    struct fraction * max = compare_fractions_desc(a, b) > 0 ? b : a;
+    const struct fraction * max = compare_fractions_desc(a, b) > 0 ? b : a;
     int b_i = 0;
     for (int i = 0; i < 2*k; ++i) {
 
@@ -1397,8 +1754,9 @@ void anyrize_qx(const float * x, const float * w, float * v, int ne0, int ne1, i
 void anyrize_qkxs(const float * x, const float * w, float * v, int ne0, int ne1, int nmin, int nmax, bool signed_scale) {
     struct fraction Faux[ne0 * MAX(abs(nmin), abs(nmax))];
     int8_t L[ne0];
+    int8_t Laux[ne0];
     for (int i = 0; i < ne1; ++i) {
-        float scale = make_qkxs_quants(ne0, nmin, nmax, x + ne0*i, w ? w + i*ne0 : NULL, L, Faux, signed_scale);
+        float scale = make_qkxs_quants(ne0, nmin, nmax, x + ne0*i, w ? w + i*ne0 : NULL, L, Laux, Faux, signed_scale);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = L[j] * scale;
             if (!isfinite(v[i*ne0 + j])) {
@@ -1492,9 +1850,19 @@ void anyrize_qkx3_q4_k(const float * x, const float * w, float * v, int ne0, int
     uint8_t L[ne0];
     uint8_t Laux[ne0];
     float the_min;
+    float weights[ne0];
     for (int i = 0; i < ne1; ++i) {
-        // FIXME: preparation for weights
-        float scale = make_qkx3_quants(ne0, nmax, x + i*ne0, w ? w + i*ne0 : NULL, L, &the_min, Laux, -0.9f, 0.05f, 36, false);
+        float sum_x2 = 0;
+        for (int l = 0; l < ne0; ++l) { sum_x2 += x[l] * x[l]; }
+        float sigma2 = 2*sum_x2/ne0;
+        float av_x = sqrtf(sigma2);
+        if (w) {
+            const float * qw = w + i;
+            for (int l = 0; l < 32; ++l) weights[l] = qw[l] * sqrtf(sigma2 + x[ne0*i + l]*x[ne0*i + l]);
+        } else {
+            for (int l = 0; l < 32; ++l) weights[l] = av_x + fabsf(x[ne0*i + l]);
+        }
+        float scale = make_qkx3_quants(ne0, nmax, x + i*ne0, weights, L, &the_min, Laux, -0.9f, 0.05f, 36, false);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = L[j] * scale - the_min;
         }
@@ -1540,6 +1908,18 @@ void anyrize_qkxs_iq4nl_signed(const float * x, const float * w, float * v, int 
         float scale = make_qkxs_nl_quants(ne0, 16, x + i*ne0, w ? w + i*ne0 : NULL, kvalues_iq4nl, L, Laux, Faux, true);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = kvalues_iq4nl[L[j]] * scale;
+        }
+    }
+}
+
+void anyrize_qkxs_iqxnl_signed(const float * x, const int8_t * kvalues, const float * w, float * v, int k, int ne0, int ne1) {
+    uint8_t L[ne0];
+    uint8_t Laux[ne0];
+    struct fraction Faux[ne0 * k];
+    for (int i = 0; i < ne1; ++i) {
+        float scale = make_qkxs_nl_quants(ne0, k, x + i*ne0, w ? w + i*ne0 : NULL, kvalues, L, Laux, Faux, true);
+        for (int j = 0; j < ne0; ++j) {
+            v[i*ne0 + j] = kvalues[L[j]] * scale;
         }
     }
 }

@@ -642,6 +642,31 @@ def binary_offset(a: np.ndarray, axis: Literal[-1] | None = None) -> QuantInfo:
     return QuantInfo(v=q * sc - mn, q=q, sc=sc, mn=mn, angles=np.sqrt(cos))
 
 
+def binary_offset_mean(
+    x: np.ndarray, qw: np.ndarray | None = None, axis: Literal[-1] | None = None
+) -> QuantInfo:
+    sumw = np.sum(
+        qw if qw is not None else np.ones_like(x),
+        axis=axis,
+        keepdims=(axis is not None),
+    )
+    sumx = np.sum(x, axis=axis, keepdims=(axis is not None))
+    meanx = sumx / sumw
+    xm = x - meanx
+    q = np.where(xm < 0.0, 0, 1)
+    sumq = np.sum(q, axis=axis, keepdims=(axis is not None))
+    meanq = sumq / sumw
+    qm = q - meanq
+
+    sc = np.sum(qm * xm, axis=axis, keepdims=(axis is not None)) / np.sum(
+        qm * qm, axis=axis, keepdims=(axis is not None)
+    )
+
+    mn = sc * meanq - meanx
+
+    return QuantInfo(v=q * sc - mn, q=q, sc=sc, mn=mn)
+
+
 def absmax_round(
     a: np.ndarray, min_max: int, axis: Literal[-1] | None = None
 ) -> QuantInfo:

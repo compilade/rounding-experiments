@@ -60,20 +60,29 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
     # qw = np.ones_like(a)
     # qw = None
 
-    # v = rounding_c.anyrize_qx(a, 8, qw)
+    v = rounding_c.anyrize_qx(a, min_max, qw)
     # v = rounding_c.anyrize_qkxs(a, -min_max, min_max - 1, qw, signed_scale=True)
     # v = rounding_c.anyrize_iq4nl(a, qw=qw)
     # v = rounding_c.anyrize_q3(a, min_max)
     # v = rounding_c.anyrize_qp(a, min_max, qw=qw)
-    v = rounding_c.anyrize_qkxs_iq4nl(a, qw=qw)
+    # v = rounding_c.anyrize_qkxs_iq4nl(a, qw=qw)
     # v = rounding_c.anyrize_qkxs_iq4nl_signed(a, qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-53, -43, -37, -29, -19, -13, -7, -3, 1, 5, 11, 17, 23, 31, 41, 47]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-63, -40, -23, -10, 1, 13, 28,  47]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-59, -36, -19,  -6, 5, 17, 32,  51]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-19, -13, -7, -3, 1, 5, 11, 17]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-7, -3, 1, 5]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-31, -13, 1, 17]), qw=qw)
+    # v = rounding_c.anyrize_qkxs_iqxnl_signed(a, np.array([-26, -8, 6, 22]), qw=qw)
     # v = rounding_c.anyrize_qkx2_q4_k(a, min_max)
+    # v = rounding_c.anyrize_qkx3_q4_k(a, min_max)
     # v = rounding_c.anyrize_qkxcm_q4_k(a, min_max)
 
     # q = rounding.anyrize_inv_sq(a, min_max, axis=-1)
     # q = rounding.absmax_dumb_round(a, min_max, axis=-1)
     # q = rounding.binary_offset(a, axis=-1)
-    # q = rounding.anyrize_offset_min_mean(a, min_max * 2, axis=-1, w=qw)
+    # q = rounding.binary_offset_mean(a, qw, axis=-1)
+    # q = rounding.anyrize_offset_min_mean(a, min_max, axis=-1, w=qw)
     # q = rounding.offset_dumb_round(a, min_max, axis=-1)
     # print(f"{a.shape=}")
     # print(f"{q.q.shape=}")
@@ -87,6 +96,7 @@ def round_to_angle(a: np.ndarray) -> np.ndarray:
     sumlx = np.sum(qw * a * v, axis=-1, keepdims=True)
     suml2 = np.sum(qw * v * v, axis=-1, keepdims=True)
     sumx2 = np.sum(qw * a * a, axis=-1, keepdims=True)
+    # return sumlx / suml2
     return np.clip(sumlx / np.sqrt(suml2 * sumx2), -1.0, 1.0)
 
     # --- abs offset comparison ---

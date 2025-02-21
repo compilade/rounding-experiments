@@ -155,6 +155,39 @@ def anyrize_qkx2_q4_k(x: np.ndarray, nmax: int) -> np.ndarray:
     return out
 
 
+rounding_dll.anyrize_qkx3_q4_k.restype = None
+rounding_dll.anyrize_qkx3_q4_k.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+)
+
+
+def anyrize_qkx3_q4_k(
+    x: np.ndarray, nmax: int, qw: np.ndarray | None = None
+) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_qkx3_q4_k(
+        x,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        x.shape[-1],
+        x.shape[-2],
+        nmax,
+    )
+    return out
+
+
 rounding_dll.anyrize_qkxcm_q4_k.restype = None
 rounding_dll.anyrize_qkxcm_q4_k.argtypes = (
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
@@ -257,6 +290,41 @@ def anyrize_qkxs_iq4nl_signed(
             else ctypes.cast(0, c_float_p)
         ),
         out,
+        x.shape[-1],
+        x.shape[-2],
+    )
+    return out
+
+rounding_dll.anyrize_qkxs_iqxnl_signed.restype = None
+rounding_dll.anyrize_qkxs_iqxnl_signed.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    np.ctypeslib.ndpointer(dtype=np.int8, ndim=1, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+)
+
+
+def anyrize_qkxs_iqxnl_signed(
+    x: np.ndarray, kvalues: np.ndarray, qw: np.ndarray | None = None
+) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    kvalues = kvalues.astype(np.int8, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_qkxs_iqxnl_signed(
+        x,
+        kvalues,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        kvalues.size,
         x.shape[-1],
         x.shape[-2],
     )
