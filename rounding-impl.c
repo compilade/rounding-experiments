@@ -964,6 +964,8 @@ static float make_qkxu_quants(int n, int nmin, int nmax, const float * restrict 
     nmin = MIN(0, nmin);
     nmax = MAX(0, nmax);
     float amax = 0.0f;
+    float min = 0.0f;
+    float max = 0.0f;
     float w_amax = 0.0f;
     int amax_i = -1;
     int w_amax_i = -1;
@@ -972,6 +974,8 @@ static float make_qkxu_quants(int n, int nmin, int nmax, const float * restrict 
         const float ax = fabsf(x[i]);
         const float wax = w * ax;
         if (ax > amax) { amax = ax; amax_i = i; }
+        if (x[i] > max) { max = x[i]; }
+        if (x[i] < min) { min = x[i]; }
         // Find the most important value
         if (wax > w_amax) { w_amax = wax; w_amax_i = i; }
     }
@@ -981,9 +985,17 @@ static float make_qkxu_quants(int n, int nmin, int nmax, const float * restrict 
         return 0.0f;
     }
 
-    // Assuming either nmac == -nmin, or one of nmax or nmin is zero
-    // And also assuming amax has the same sign as the chosen range.
-    const int amax_range = MAX(nmax, -nmin);
+    // Find the max range in [0, amax_range] which doesn't result in clamping.
+    // This is the range from the side which would clamp first (biggest ratio of max to nmax).
+    int max_range;
+    float range_max;
+    if (nmin * min == 0.0f || (max * nmax != 0.0f && max * -nmin > min * -nmax)) {
+        max_range = nmax;
+        range_max = max;
+    } else {
+        max_range = -nmin;
+        range_max = fabsf(min);
+    }
     float sumlx = 0.0f;
     float suml2 = 0.0f;
     float scale = 0.0f;
@@ -992,8 +1004,8 @@ static float make_qkxu_quants(int n, int nmin, int nmax, const float * restrict 
     int best_i = -2; // not consecutive with 0..n_frac
     // Pre-calculate the half-point for the common range.
     // All smaller vectors have a representable vector with twice the values, and thus can be skipped.
-    if (amax_range > 1) {
-        const float iscale = ((float)(amax_range / 2 + 1))/amax;
+    if (max_range > 1 && range_max > 0.0f) {
+        const float iscale = ((float)(max_range / 2 + 1))/range_max;
         for (int i = 0; i < n; ++i) {
             const float w = weights[i];
             int l = MAX(nmin, MIN(lroundf(x[i] * iscale), nmax));
@@ -1139,7 +1151,7 @@ static float make_qkxsigned_quants(int n, int nmin, int nmax, const float * rest
         }
     }
 
-    // TODO: make that range sign aware to reduce the search space
+    // TODO: make that range sign-aware to reduce the search space
     const int imax_range = MAX(nmax, -nmin);
     const int max_odd = 2*(imax_range + 1) + 1;
     const float wmax = fabsf(x[w_amax_i]);
