@@ -487,6 +487,49 @@ def corr_div(l, x, w=None, centered=False):
     # ...
 
 
+def anyrize_offset_reg(
+    a: np.ndarray,
+    nmax: int,
+    axis: Literal[-1] | None = None,
+    w: np.ndarray | None = None,
+) -> QuantInfo:
+    a = a.astype(np.float32, copy=False)
+    w = np.square(a) if w is None else w
+    N = a.size if axis is None else a.shape[axis]
+    off = np.min(a, axis=axis, keepdims=True)
+    # weighted mean
+    sumw = np.sum(w, axis=axis, keepdims=(axis is not None))
+    sumx = np.sum(w * a, axis=axis, keepdims=True)
+    shape = a.shape
+    # WARNING: reversing the range is NECESSARY here, otherwise NANs for some reason.
+    odd = np.array([2 * i + 1 for i in range(nmax)[::-1]], dtype=np.float32)
+    # TODO: does this only work for axis=-1 | None?
+    ab, odd, wb = np.broadcast_arrays(a[..., np.newaxis], odd, w[..., np.newaxis])
+    ab = ab.reshape((*shape[:-1], -1))
+    odd = odd.reshape((*shape[:-1], -1))
+    wb = wb.reshape((*shape[:-1], -1))
+
+    # All the .5 --> 0.5 * (..., 9, 7, 5, 3, 1,)
+    scales = (ab - off) / odd
+    # WARNING: a stable sort is NECESSARY in conjunction with the reversed odd numbers
+    #          otherwise this sometimes produces NANs (not sure why exactly)
+    ids = np.argsort(-scales, kind="stable", axis=axis)
+    sa = np.take_along_axis(ab, ids, axis=axis)
+    so = np.take_along_axis(odd, ids, axis=axis)
+    sw = np.take_along_axis(wb, ids, axis=axis)
+
+    sumlx = np.cumsum(sw * sa, axis=axis)
+    suml2 = np.cumsum(sw * so, axis=axis)
+    suml = np.cumsum(sw, axis=axis)
+
+    D = sumw * suml2 - suml * suml
+    this_scale = (sumw * sumlx - sumx * suml) / D
+    this_min = (suml2 * sumx - suml * sumlx) / D
+    # mad = # TODO: less calculation to get this. They need to be easily comparable
+
+    pass
+
+
 def anyrize_offset_min_mean(
     a: np.ndarray,
     nmax: int,

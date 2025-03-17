@@ -17,10 +17,12 @@
       in {
         default = pkgs.callPackage ({
           mkShell,
+          oxipng,
           python3,
         }:
           mkShell {
             packages = [
+              oxipng
               (python3.withPackages (p:
                 with p; [
                   numpy
