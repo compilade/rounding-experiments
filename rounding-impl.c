@@ -844,7 +844,7 @@ static struct fraction k_heap_pop(struct k_heap * k_heap) {
     };
 }
 
-// comparator function for sorting fractions in make_qkxs_quants
+// comparator function for sorting fractions
 static inline int compare_fractions_desc(const void * a, const void * b) {
     const struct fraction * f_a = (const struct fraction *) a;
     const struct fraction * f_b = (const struct fraction *) b;
@@ -2190,7 +2190,7 @@ static float make_qkxchm_quants(int n, int nmax, const float * restrict x, const
 }
 */
 
-static float make_qkxsh_quants(int n, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, struct k_heap * restrict k_heap, bool signed_scale) {
+static float make_qkxh_quants(int n, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, struct k_heap * restrict k_heap, bool signed_scale) {
     const int nmin = -k_heap->mid_k;
     const int nmax = k_heap->k + nmin - 1;
     float amax = fabsf(x[0]);
@@ -2436,19 +2436,19 @@ void anyrize_qkx3_q4_k(const float * x, const float * w, float * v, int ne0, int
         float sigma2 = 2*sum_x2/ne0;
         float av_x = sqrtf(sigma2);
         if (w) {
-            const float * qw = w + i;
-            for (int l = 0; l < 32; ++l) weights[l] = qw[l] * sqrtf(sigma2 + x[ne0*i + l]*x[ne0*i + l]);
+            const float * qw = w + i*ne0;
+            for (int l = 0; l < ne0; ++l) weights[l] = qw[l] * sqrtf(sigma2 + x[ne0*i + l]*x[ne0*i + l]);
         } else {
-            for (int l = 0; l < 32; ++l) weights[l] = av_x + fabsf(x[ne0*i + l]);
+            for (int l = 0; l < ne0; ++l) weights[l] = av_x + fabsf(x[ne0*i + l]);
         }
-        float scale = make_qkx3_quants(ne0, nmax, x + i*ne0, weights, L, &the_min, Laux, -0.9f, 0.05f, 36, false);
+        float scale = make_qkx3_quants(ne0, nmax, x + i*ne0, w + i*ne0, L, &the_min, Laux, -0.9f, 0.05f, 36, false);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = L[j] * scale - the_min;
         }
     }
 }
 
-void anyrize_qkxsh(const float * x, const float * w, float * v, int ne0, int ne1, int nmin, int nmax, bool signed_scale) {
+void anyrize_qkxh(const float * x, const float * w, float * v, int ne0, int ne1, int nmin, int nmax, bool signed_scale) {
     int8_t L[ne0];
     int8_t Laux[ne0];
     struct fraction Faux[ne0 * 16];
@@ -2459,7 +2459,7 @@ void anyrize_qkxsh(const float * x, const float * w, float * v, int ne0, int ne1
 
     k_heap_init_linear(&k_heap, nmin, nmax, heap_cells, odd);
     for (int i = 0; i < ne1; ++i) {
-        float scale = make_qkxsh_quants(ne0, x + i*ne0, w ? w + i*ne0 : NULL, L, Laux, &k_heap, signed_scale);
+        float scale = make_qkxh_quants(ne0, x + i*ne0, w ? w + i*ne0 : NULL, L, Laux, &k_heap, signed_scale);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = (L[j] + nmin) * scale;
         }

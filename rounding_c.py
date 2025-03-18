@@ -207,8 +207,8 @@ def anyrize_qkxcm_q4_k(x: np.ndarray, nmax: int) -> np.ndarray:
     return out
 
 
-rounding_dll.anyrize_qkxsh.restype = None
-rounding_dll.anyrize_qkxsh.argtypes = (
+rounding_dll.anyrize_qkxh.restype = None
+rounding_dll.anyrize_qkxh.argtypes = (
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
     c_float_p,
     np.ctypeslib.ndpointer(
@@ -222,7 +222,7 @@ rounding_dll.anyrize_qkxsh.argtypes = (
 )
 
 
-def anyrize_qkxsh(
+def anyrize_qkxh(
     x: np.ndarray,
     nmin: int,
     nmax: int,
@@ -231,7 +231,7 @@ def anyrize_qkxsh(
 ) -> np.ndarray:
     x = x.astype(np.float32, copy=False)
     out = np.zeros_like(x)
-    rounding_dll.anyrize_qkxsh(
+    rounding_dll.anyrize_qkxh(
         x,
         (
             qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
