@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import rounding_c
+import rounding
 
 # Widest part of the image
-W = 1024
-# W = 2048
+# W = 1024
+W = 2048
 # W = 4096
 # W = 8192
 
@@ -29,23 +30,31 @@ def arr_to_pixels(v: np.ndarray) -> np.ndarray:
     )
 
 
-theta = np.linspace(0, 2 * np.pi, W, endpoint=False)
-phi = np.linspace(0, np.pi, W // 2, endpoint=True)
+theta = np.linspace(0, 2 * np.pi, W, endpoint=False).reshape((1, -1))
+phi = np.linspace(0, np.pi, W // 2, endpoint=True).reshape((-1, 1))
 
+cos_theta = np.cos(theta)
+sin_theta = np.sin(theta)
+cos_phi = np.cos(phi)
+sin_phi = np.sin(phi)
 
-plane = np.array(
-    [
-        [np.sin(p) * np.cos(t), np.sin(p) * np.sin(t), np.cos(p)]
-        ## Squished, but keeps the mean at zero
-        # + [-(np.sin(p) * np.cos(t) + np.sin(p) * np.sin(t) + np.cos(p))]
-        ## Rhombic dodecahedron!
-        + [-(1/3)*(np.sin(p) * np.cos(t) + np.sin(p) * np.sin(t) + np.cos(p))]
-        for p in phi
-        for t in theta
-    ]
-)
+coords = [
+    (sin_phi @ cos_theta),
+    (sin_phi @ sin_theta),
+    (cos_phi @ np.ones_like(theta)),
+    # (sin_phi @ sin_theta),
+    # (sin_phi @ sin_theta),
+    # (sin_phi @ sin_theta),
+    # (sin_phi @ sin_theta),
+]
+## Squished, but keeps the mean at zero
+# coords += [-(coords[0] + coords[1] + coords[2])]
+## Rhombic dodecahedron!
+# coords += [-(1/3)*(coords[0] + coords[1] + coords[2])]
 
-cos = arr_to_pixels(plane).reshape((W // 2, W))
+equirectangle = np.concatenate([c.reshape((-1, 1)) for c in coords], axis=-1)
+
+cos = arr_to_pixels(equirectangle).reshape((W // 2, W))
 
 print(f"{np.min(cos)=}")
 print(f"{np.mean(cos)=}")

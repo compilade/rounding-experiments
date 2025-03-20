@@ -793,6 +793,42 @@ static void k_heap_set_x(struct k_heap * k_heap, const float * restrict x, int n
     }
 }
 
+static void k_heap_set_x_min(struct k_heap * k_heap, const float * restrict x, int n, float min) {
+    int j = 0;
+    for (int i = 0; i < n; ++i) {
+        const int k_i = 1;
+        if (k_i < k_heap->k) {
+            const float x_min = x[i] - min;
+            k_heap->heap[j++] = (struct k_heap_cell) {
+                .k_i=k_i,
+                .x_i=i,
+                .x=x_min,
+                .frac=x_min / k_heap->odd[k_i],
+            };
+        }
+    }
+    k_heap->n = j;
+    for (int i = (k_heap->n / 2) - 1; i >= 0; --i) {
+        k_heap_build(k_heap, i);
+    }
+}
+
+static void k_heap_set_min(struct k_heap * k_heap, const float * restrict x, float min) {
+    const int n = k_heap->n;
+    for (int i = 0; i < n; ++i) {
+        struct k_heap_cell * heap_cell = k_heap->heap + i;
+        const int x_i = heap_cell->x_i;
+        const int k_i = heap_cell->k_i;
+        const float x_min = x[x_i] - min;
+        heap_cell->x = x_min;
+        heap_cell->frac = x_min / k_heap->odd[k_i];
+    }
+
+    for (int i = (n / 2) - 1; i >= 0; --i) {
+        k_heap_build(k_heap, i);
+    }
+}
+
 static struct fraction k_heap_pop(struct k_heap * k_heap) {
     if (k_heap && k_heap->n > 0) {
         struct k_heap_cell * heap_cell = k_heap->heap;
@@ -1695,6 +1731,7 @@ static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const f
         sumlx += w * x[i] * kmin;
         suml2 += w * kmin * kmin;
     }
+    memcpy(L, Laux, n);
 
     int n_frac_p = 0;
     for (int i = 0; i < n; ++i) {
@@ -1721,7 +1758,7 @@ static float make_qkxs_nl_quants(int n, int k, const float * restrict x, const f
     float best_suml2 = 1.0f;
     float sumlx_p = sumlx;
     float suml2_p = suml2;
-    int best_p_i = -2; // not consecutive with 0..n_frac
+    int best_p_i = -1; // consecutive with 0..n_frac
     for (int i = 0; i < n_frac_p; ++i) {
         const int ii = Faux[i].i;
         const float w = weights ? weights[ii] : x[ii] * x[ii];
@@ -2313,6 +2350,125 @@ static float make_qkxh_quants(int n, const float * restrict x, const float * res
     return scale;
 }
 
+
+static float make_qkxmh_quants(int n, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, float * restrict the_min, struct k_heap * restrict k_heap, bool signed_min) {
+    const int nmax = k_heap->kmax;
+    float min = x[0];
+    int min_i = 0;
+    float max = x[0];
+    float sum_w = weights[0];
+    float sum_x = sum_w * x[0];
+    float sum_x2 = sum_x * x[0];
+    for (int i = 1; i < n; ++i) {
+        const float w = weights[i];
+        sum_w += w;
+        sum_x += w * x[i];
+        sum_x2 += w * x[i] * x[i];
+        if (x[i] < min) { min = x[i]; min_i = i; }
+        if (x[i] > max) { max = x[i]; }
+    }
+
+    // What about negating the min? Can't, the scale isn't applied on the min.
+    // The min needs to be strictly negative because then can be quantized unsigned.
+    // Could a negative superblock min scale be used? Maybe, but that's out of scope here.
+    if (max == min) {
+        if (min < 0.0f) {
+            memset(L, 0, n);
+            *the_min = -min;
+            return 0.0f;
+        } else {
+            memset(L, 1, n);
+            *the_min = 0.0f;
+            return min;
+        }
+    }
+    if (!signed_min && min > 0.0f) { min = 0.0f; }
+    if (sum_w <= 0.0f) {
+        // should not happen?
+        fprintf(stderr, "%s: should not happen, sumw is %f\n", __func__, sum_w);
+        sum_w = 1.0f;
+    }
+    memset(L, 0, n);
+
+    float this_min = min;
+    float scale = 0.0f;
+    float best = 0.0f;
+    float best_denom = 1.0f; // must never be zero
+
+    memset(Laux, 0, n);
+
+    k_heap_set_x_min(k_heap, x, n, this_min);
+
+    // TODO: use similarity with [1, 1, 1, ...]
+    float sumlx = 0.0f;
+    float suml2 = 0.0f;
+    float sumi2 = 0.0f;
+    float suml = 0.0f;
+    float sumi = 0.0f;
+    int max_l = 0;
+    // FIXME: enumerate all Laux which result from trying all distinct initial scales and mins
+    // For 1 min, there are n scales
+    // for ? mins, there are ? scales
+    while (k_heap->n > 0) {
+        struct fraction frac = k_heap_pop(k_heap);
+
+        const int ii = frac.i;
+        const float w = weights[ii];
+        sumlx += w * x[ii]; // TODO: frac.numer? would need a native min in k_heap, though
+        suml2 += w * frac.denom;
+        sumi2 += frac.denom;
+        suml += w;
+        sumi += 1;
+
+        Laux[ii] += 1;
+        if (Laux[ii] > max_l) { max_l = Laux[ii]; }
+
+        float proj = sumlx * sumlx;
+        float norm = suml2;
+        float scale_numerator = sumlx;
+        float min_numerator = 0.0f;
+        int l_off = 0;
+
+        // At least one component will always be 0
+        if (ii != min_i) {
+            const float D = sum_w * suml2 - suml * suml;
+
+            if (D > 0.0f && /* to avoid some rounding problems */ n * sumi2 > sumi * sumi) {
+                const float proto_scale = (sum_w * sumlx - sum_x * suml);
+                const float proto_min = (suml2 * sum_x - suml * sumlx);
+                const float proto_min_adj = proto_min - (nmax - max_l)*proto_scale;
+                if (signed_min || proto_min_adj < 0.0f) {
+                    const float projm = sum_x * (proto_min) + sumlx * (proto_scale);
+                    if (norm > 0.0f && projm * norm > proj * D) {
+                        proj = projm;
+                        norm = D;
+                        scale_numerator = proto_scale;
+                        min_numerator = proto_min_adj;
+                        l_off = nmax - max_l;
+                    }
+                }
+            }
+        }
+
+        if (norm > 0.0f && proj * best_denom > best * norm) {
+            best = proj;
+            best_denom = norm;
+            scale = scale_numerator / norm;
+            this_min = min_numerator != 0.0f ? min_numerator / norm : 0.0f;
+            for (int i = 0; i < n; ++i) {
+                L[i] = Laux[i] + l_off;
+            }
+            // if (this_min < 0.0f) {
+            //     // k_heap_set_min(k_heap, x, this_min);
+            // }
+        }
+    }
+
+    *the_min = -this_min;
+
+    return scale;
+}
+
 // ---- helper to be called from Python ----
 
 void anyrize_qx(const float * x, const float * w, float * v, int ne0, int ne1, int nmax) {
@@ -2451,7 +2607,6 @@ void anyrize_qkx3_q4_k(const float * x, const float * w, float * v, int ne0, int
 void anyrize_qkxh(const float * x, const float * w, float * v, int ne0, int ne1, int nmin, int nmax, bool signed_scale) {
     int8_t L[ne0];
     int8_t Laux[ne0];
-    struct fraction Faux[ne0 * 16];
     struct k_heap_cell heap_cells[ne0];
     const int k = nmax - nmin + 1;
     float odd[k];
@@ -2465,6 +2620,26 @@ void anyrize_qkxh(const float * x, const float * w, float * v, int ne0, int ne1,
         }
     }
 }
+
+void anyrize_qkxmh(const float * x, const float * w, float * v, int ne0, int ne1, int nmax, bool signed_min) {
+    int8_t L[ne0];
+    int8_t Laux[ne0];
+    struct k_heap_cell heap_cells[ne0];
+    const int k = nmax + 1;
+    float odd[k];
+    struct k_heap k_heap;
+
+    k_heap_init_linear(&k_heap, 0, nmax, heap_cells, odd);
+
+    for (int i = 0; i < ne1; ++i) {
+        float min = 0.0f;
+        float scale = make_qkxmh_quants(ne0, x + i*ne0, w + i*ne0, L, Laux, &min, &k_heap, signed_min);
+        for (int j = 0; j < ne0; ++j) {
+            v[i*ne0 + j] = (L[j] * scale) - min;
+        }
+    }
+}
+
 static const int8_t kvalues_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
 void anyrize_iq4nl(const float * x, const float * w, float * v, int ne0, int ne1) {
