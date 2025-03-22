@@ -248,6 +248,44 @@ def anyrize_qkxh(
     return out
 
 
+rounding_dll.anyrize_qkxsh.restype = None
+rounding_dll.anyrize_qkxsh.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+)
+
+
+def anyrize_qkxsh(
+    x: np.ndarray,
+    nmin: int,
+    nmax: int,
+    qw: np.ndarray | None = None,
+) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_qkxsh(
+        x,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        x.shape[-1],
+        x.shape[-2],
+        nmin,
+        nmax,
+    )
+    return out
+
+
 rounding_dll.anyrize_qkxmh.restype = None
 rounding_dll.anyrize_qkxmh.argtypes = (
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
