@@ -45,6 +45,37 @@ def anyrize_qx(x: np.ndarray, nmax: int, qw: np.ndarray | None = None) -> np.nda
     return out
 
 
+rounding_dll.anyrize_qxg.restype = None
+rounding_dll.anyrize_qxg.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+)
+
+
+def anyrize_qxg(x: np.ndarray, nmax: int, qw: np.ndarray | None = None) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_qxg(
+        x,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        x.shape[-1],
+        x.shape[-2],
+        nmax,
+    )
+    return out
+
+
 rounding_dll.anyrize_qkxs.restype = None
 rounding_dll.anyrize_qkxs.argtypes = (
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
@@ -340,6 +371,35 @@ def anyrize_iq4nl(x: np.ndarray, qw: np.ndarray | None = None) -> np.ndarray:
     x = x.astype(np.float32, copy=False)
     out = np.zeros_like(x)
     rounding_dll.anyrize_iq4nl(
+        x,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        x.shape[-1],
+        x.shape[-2],
+    )
+    return out
+
+
+rounding_dll.anyrize_iq4nl_g.restype = None
+rounding_dll.anyrize_iq4nl_g.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+)
+
+
+def anyrize_iq4nl_g(x: np.ndarray, qw: np.ndarray | None = None) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_iq4nl_g(
         x,
         (
             qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
