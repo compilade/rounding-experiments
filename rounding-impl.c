@@ -16,6 +16,7 @@
 
 #define GGML_ASSERT(x) assert(x)
 
+#define GGML_RESTRICT restrict
 
 // FP16 <-> FP32
 // ref: https://github.com/Maratyszcza/FP16
@@ -2815,6 +2816,103 @@ static float make_qkxsh_quants(int n, int nmin, int nmax, const float * restrict
     return scale;
 }
 
+// non-linear exhaustive search with cumulative sums
+static float make_qkxh_nl_quants(int n, const float * GGML_RESTRICT x, const float * GGML_RESTRICT weights, uint8_t * GGML_RESTRICT L, uint8_t * GGML_RESTRICT Laux, struct k_heap * GGML_RESTRICT k_heap, bool signed_scale, bool fast) {
+    float sumlx = 0.0f;
+    float suml2 = 0.0f;
+    float amax = -1.0f;
+    int amax_i = -1;
+    const int8_t kmin = k_heap->kmin;
+    for (int i = 0; i < n; ++i) {
+        const float w = weights ? weights[i] : x[i] * x[i];
+        const float ax = fabsf(x[i]);
+        if (ax > amax) {
+            amax = ax;
+            amax_i = i;
+        }
+        sumlx += w * x[i] * kmin;
+        suml2 += w * kmin * kmin;
+    }
+    memset(Laux, k_heap->mid_k, n);
+    memset(L, k_heap->mid_k, n);
+
+    const bool neg_scale = signed_scale && fast ? (x[amax_i] < 0.0f) != (k_heap->kmax < 0) : false;
+
+    k_heap_set_x(k_heap, x, n, neg_scale);
+
+    float best;
+    float best_sumlx;
+    float best_suml2;
+    if (suml2 != 0.0f) {
+        best = sumlx * sumlx;
+        best_sumlx = sumlx; // can't change the sign of kmin
+        best_suml2 = suml2;
+    } else {
+        best = 0.0f;
+        best_sumlx = 0.0f;
+        best_suml2 = 1.0f;
+    }
+    float sumlx_p = neg_scale ? -sumlx : sumlx;
+    float suml2_p = suml2;
+    int best_p_i = -1; // consecutive with 0..n_frac
+    for (int i = 0; k_heap->n > 0; ++i) {
+        struct fraction frac = k_heap_pop(k_heap);
+        const int ii = frac.i;
+        const float w = weights ? weights[ii] : x[ii] * x[ii];
+        sumlx_p += w * frac.numer;
+        suml2_p += w * frac.denom;
+        const float current = sumlx_p * sumlx_p;
+        Laux[ii] += (x[ii] < 0.0f) != neg_scale ? -1 : 1;
+        if (suml2_p > 0.0f && current * best_suml2 > best * suml2_p) {
+            best = current;
+            best_sumlx = neg_scale ? -sumlx_p : sumlx_p;
+            best_suml2 = suml2_p;
+            if (i == best_p_i + 1) {
+                // reduce copies for consecutive bests
+                L[ii] += (x[ii] < 0.0f) != neg_scale ? -1 : 1;
+            } else {
+                memcpy(L, Laux, n);
+            }
+            best_p_i = i;
+        }
+    }
+
+    // Non-linear mappings are usually not symmetric, so try negating the scale
+    // This is the same as above, but keeping the old best if the new best is not better.
+    if (signed_scale && !fast) {
+        memset(Laux, k_heap->mid_k, n);
+
+        k_heap_set_x(k_heap, x, n, true);
+
+        float sumlx_n = -sumlx;
+        float suml2_n = suml2;
+        int best_n_i = -2; // not consecutive with 0..n_frac
+        for (int i = 0; k_heap->n > 0; ++i) {
+            struct fraction frac = k_heap_pop(k_heap);
+            const int ii = frac.i;
+            const float w = weights ? weights[ii] : x[ii] * x[ii];
+            sumlx_n += w * frac.numer;
+            suml2_n += w * frac.denom;
+            const float current = sumlx_n * sumlx_n;
+            Laux[ii] += x[ii] >= 0.0f ? -1 : 1;
+            if (suml2_n > 0.0f && current * best_suml2 > best * suml2_n) {
+                best = current;
+                best_sumlx = -sumlx_n;
+                best_suml2 = suml2_n;
+                if (i == best_n_i + 1) {
+                    // reduce copies for consecutive bests
+                    L[ii] += x[ii] >= 0.0f ? -1 : 1;
+                } else {
+                    memcpy(L, Laux, n);
+                }
+                best_n_i = i;
+            }
+        }
+    }
+
+    return best_suml2 != 0.0f ? best_sumlx / best_suml2 : 0.0f;
+}
+
 static float make_qkxmh_quants(int n, const float * restrict x, const float * restrict weights, int8_t * restrict L, int8_t * restrict Laux, float * restrict the_min, struct k_heap * restrict k_heap, bool signed_min) {
     const int nmax = k_heap->kmax;
     float min = x[0];
@@ -3114,6 +3212,23 @@ void anyrize_qkxsh(const float * x, const float * w, float * v, int ne0, int ne1
         float scale = make_qkxsh_quants(ne0, nmin, nmax, x + i*ne0, w ? w + i*ne0 : NULL, L, Laux, &k_heap);
         for (int j = 0; j < ne0; ++j) {
             v[i*ne0 + j] = (L[j] + nmin) * scale;
+        }
+    }
+}
+
+void anyrize_qkxh_nl(const float * x, const float * w, float * v, int ne0, int ne1, const int8_t * kvalues, int k, bool signed_scale, bool fast) {
+    uint8_t L[ne0];
+    uint8_t Laux[ne0];
+    struct k_heap_cell heap_cells[ne0];
+    float odd[k];
+    float step[k];
+    struct k_heap k_heap;
+
+    k_heap_init(&k_heap, k, kvalues, heap_cells, odd, step);
+    for (int i = 0; i < ne1; ++i) {
+        float scale = make_qkxh_nl_quants(ne0, x + i*ne0, w ? w + i*ne0 : NULL, L, Laux, &k_heap, signed_scale, fast);
+        for (int j = 0; j < ne0; ++j) {
+            v[i*ne0 + j] = kvalues[L[j]] * scale;
         }
     }
 }

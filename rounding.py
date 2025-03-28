@@ -724,6 +724,18 @@ def absmax_round(
     return QuantInfo(v=q * sc, q=q, sc=sc)
 
 
+def absmax_asym_round(
+    a: np.ndarray, nmin: int, nmax: int, axis: Literal[-1] | None = None
+) -> QuantInfo:
+    max_n = nmin if abs(nmin) > abs(nmax) else nmax
+    max_i = np.argmax(np.abs(a), axis=axis, keepdims=(axis is not None))
+    max_v = np.take_along_axis(a, max_i, axis=axis)
+    sc = max_v / max_n
+    iscale = 1 / sc
+    q = np.clip(np_roundf(iscale * a), nmin, nmax)
+    return QuantInfo(v=q * sc, q=q, sc=sc)
+
+
 def absmax_dumb_round(
     a: np.ndarray, min_max: int, axis: Literal[-1] | None = None
 ) -> QuantInfo:

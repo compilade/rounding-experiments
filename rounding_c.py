@@ -317,6 +317,51 @@ def anyrize_qkxsh(
     return out
 
 
+rounding_dll.anyrize_qkxh_nl.restype = None
+rounding_dll.anyrize_qkxh_nl.argtypes = (
+    np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
+    c_float_p,
+    np.ctypeslib.ndpointer(
+        dtype=np.float32, ndim=2, flags=("C_CONTIGUOUS", "WRITEABLE")
+    ),
+    ctypes.c_int,
+    ctypes.c_int,
+    np.ctypeslib.ndpointer(dtype=np.int8, ndim=1, flags="C"),
+    ctypes.c_int,
+    ctypes.c_bool,
+    ctypes.c_bool,
+)
+
+
+kvalues_iq4nl = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], dtype=np.int8)
+
+def anyrize_qkxh_nl(
+    x: np.ndarray,
+    kvalues: np.ndarray,
+    qw: np.ndarray | None = None,
+    signed_scale: bool = True,
+    fast: bool = False,
+) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    out = np.zeros_like(x)
+    rounding_dll.anyrize_qkxh_nl(
+        x,
+        (
+            qw.astype(np.float32, copy=False).ctypes.data_as(c_float_p)
+            if qw is not None
+            else ctypes.cast(0, c_float_p)
+        ),
+        out,
+        x.shape[-1],
+        x.shape[-2],
+        kvalues.astype(np.int8, copy=False),
+        kvalues.shape[0],
+        signed_scale,
+        fast,
+    )
+    return out
+
+
 rounding_dll.anyrize_qkxmh.restype = None
 rounding_dll.anyrize_qkxmh.argtypes = (
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=2, flags="C"),
